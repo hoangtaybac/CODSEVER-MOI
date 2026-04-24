@@ -83,14 +83,10 @@ function decodeXmlEntities(s = "") {
     );
 }
 
-async function getZipEntryBuffer(zipSource, p) {
-  // ✅ TỐI ƯU TỐC ĐỘ: tra cứu entry bằng Map + cache buffer đã giải nén.
-  // Không đổi thuật toán chuyển đổi, chỉ tránh find() và giải nén lại cùng một file trong .docx.
-  const f = zipSource instanceof Map ? zipSource.get(p) : zipSource.find((x) => x.path === p);
+async function getZipEntryBuffer(zipFiles, p) {
+  const f = zipFiles.find((x) => x.path === p);
   if (!f) return null;
-  if (f.__cachedBuffer) return f.__cachedBuffer;
-  f.__cachedBuffer = await f.buffer();
-  return f.__cachedBuffer;
+  return await f.buffer();
 }
 
 /* ================= Inkscape Convert EMF/WMF -> PNG ================= */
@@ -1235,11 +1231,11 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     if (!req.file?.buffer) throw new Error("No file uploaded");
 
     const zip = await unzipper.Open.buffer(req.file.buffer);
-    // ✅ TỐI ƯU: map path -> entry để đọc nhanh các ảnh/OLE trong docx lớn.
-    const zipFileMap = new Map(zip.files.map((f) => [f.path, f]));
 
-    const docEntry = zipFileMap.get("word/document.xml");
-    const relEntry = zipFileMap.get("word/_rels/document.xml.rels");
+    const docEntry = zip.files.find((f) => f.path === "word/document.xml");
+    const relEntry = zip.files.find(
+      (f) => f.path === "word/_rels/document.xml.rels"
+    );
     if (!docEntry || !relEntry)
       throw new Error("Missing document.xml or document.xml.rels");
 
@@ -1249,12 +1245,12 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     // 1) MathType -> LaTeX (and fallback images)
     const images = {};
-    const mt = await tokenizeMathTypeOleFirst(docXml, rels, zipFileMap, images);
+    const mt = await tokenizeMathTypeOleFirst(docXml, rels, zip.files, images);
     docXml = mt.outXml;
     const latexMap = mt.latexMap;
 
     // 2) normal images
-    const imgTok = await tokenizeImagesAfter(docXml, rels, zipFileMap);
+    const imgTok = await tokenizeImagesAfter(docXml, rels, zip.files);
     docXml = imgTok.outXml;
     Object.assign(images, imgTok.imgMap);
 
@@ -1273,23 +1269,21 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     const blocks = buildOrderedBlocks(exam);
 
-    // ✅ FAST RESPONSE:
-    // Frontend mới dùng `blocks`, nên không gửi lặp thêm `exam` + `questions` mặc định.
-    // Thuật toán chuyển đổi vẫn giữ nguyên; chỉ giảm JSON trả về để upload/hiển thị nhanh hơn.
-    // Nếu cần debug đầy đủ: gọi /upload?full=1
-    const full = String(req.query.full || "") === "1";
-    const payload = {
+    const questions = legacyQuestionsFromExam(exam);
+
+    res.json({
       ok: true,
       total: exam.questions.length,
       sections,
       blocks,
+      exam,
+      questions,
       latex: latexMap,
       images,
-      rawText: full ? text : '',
+      rawText: text,
       debug: {
         latexCount: Object.keys(latexMap).length,
         imagesCount: Object.keys(images).length,
-        lean: !full,
         exam: {
           questions: exam.questions.length,
           mcq: exam.questions.filter((x) => x.type === "mcq").length,
@@ -1297,14 +1291,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
           short: exam.questions.filter((x) => x.type === "short").length,
         },
       },
-    };
-
-    if (full) {
-      payload.exam = exam;
-      payload.questions = legacyQuestionsFromExam(exam);
-    }
-
-    res.json(payload);
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ ok: false, error: err?.message || String(err) });
