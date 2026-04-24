@@ -83,10 +83,14 @@ function decodeXmlEntities(s = "") {
     );
 }
 
-async function getZipEntryBuffer(zipFiles, p) {
-  const f = zipFiles.find((x) => x.path === p);
+async function getZipEntryBuffer(zipSource, p) {
+  // ✅ TỐI ƯU TỐC ĐỘ: tra cứu entry bằng Map + cache buffer đã giải nén.
+  // Không đổi thuật toán chuyển đổi, chỉ tránh find() và giải nén lại cùng một file trong .docx.
+  const f = zipSource instanceof Map ? zipSource.get(p) : zipSource.find((x) => x.path === p);
   if (!f) return null;
-  return await f.buffer();
+  if (f.__cachedBuffer) return f.__cachedBuffer;
+  f.__cachedBuffer = await f.buffer();
+  return f.__cachedBuffer;
 }
 
 /* ================= Inkscape Convert EMF/WMF -> PNG ================= */
@@ -1231,11 +1235,11 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     if (!req.file?.buffer) throw new Error("No file uploaded");
 
     const zip = await unzipper.Open.buffer(req.file.buffer);
+    // ✅ TỐI ƯU: map path -> entry để đọc nhanh các ảnh/OLE trong docx lớn.
+    const zipFileMap = new Map(zip.files.map((f) => [f.path, f]));
 
-    const docEntry = zip.files.find((f) => f.path === "word/document.xml");
-    const relEntry = zip.files.find(
-      (f) => f.path === "word/_rels/document.xml.rels"
-    );
+    const docEntry = zipFileMap.get("word/document.xml");
+    const relEntry = zipFileMap.get("word/_rels/document.xml.rels");
     if (!docEntry || !relEntry)
       throw new Error("Missing document.xml or document.xml.rels");
 
@@ -1245,12 +1249,12 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     // 1) MathType -> LaTeX (and fallback images)
     const images = {};
-    const mt = await tokenizeMathTypeOleFirst(docXml, rels, zip.files, images);
+    const mt = await tokenizeMathTypeOleFirst(docXml, rels, zipFileMap, images);
     docXml = mt.outXml;
     const latexMap = mt.latexMap;
 
     // 2) normal images
-    const imgTok = await tokenizeImagesAfter(docXml, rels, zip.files);
+    const imgTok = await tokenizeImagesAfter(docXml, rels, zipFileMap);
     docXml = imgTok.outXml;
     Object.assign(images, imgTok.imgMap);
 
