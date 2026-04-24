@@ -89,6 +89,21 @@ function createZipFileMap(zipFiles) {
   return map;
 }
 
+
+async function mapLimit(entries, limit, worker) {
+  const arr = Array.from(entries || []);
+  const out = new Array(arr.length);
+  let i = 0;
+  const n = Math.max(1, Number(limit) || 1);
+  await Promise.all(Array.from({ length: Math.min(n, arr.length) }, async () => {
+    while (i < arr.length) {
+      const cur = i++;
+      out[cur] = await worker(arr[cur], cur);
+    }
+  }));
+  return out;
+}
+
 async function getZipEntryBuffer(zipFilesOrMap, p) {
   const f = zipFilesOrMap instanceof Map
     ? zipFilesOrMap.get(p)
@@ -611,8 +626,10 @@ async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
 
   const latexMap = {};
 
-  await Promise.all(
-    Object.entries(found).map(async ([key, info]) => {
+  await mapLimit(
+    Object.entries(found),
+    Number(process.env.MT_CONCURRENCY || 3),
+    async ([key, info]) => {
       const oleFull = normalizeTargetToWordPath(info.oleTarget);
       const oleBuf = await getZipEntryBuffer(zipFiles, oleFull);
 
@@ -664,7 +681,7 @@ async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
       }
 
       latexMap[key] = "";
-    })
+    }
   );
 
   return { outXml: docXml, latexMap };
@@ -682,8 +699,7 @@ async function tokenizeImagesAfter(docXml, rels, zipFiles) {
     if (!target) return;
     const full = normalizeTargetToWordPath(target);
 
-    jobs.push(
-      (async () => {
+    jobs.push(async () => {
         const buf = await getZipEntryBuffer(zipFiles, full);
         if (!buf) return;
 
@@ -698,8 +714,7 @@ async function tokenizeImagesAfter(docXml, rels, zipFiles) {
           } catch {}
         }
         imgMap[key] = `data:${mime};base64,${buf.toString("base64")}`;
-      })()
-    );
+      });
   };
 
   // ✅ FIX DUY NHẤT: bắt cả <a:blip .../> và <a:blip ...> + cả r:embed và r:link
@@ -721,7 +736,7 @@ async function tokenizeImagesAfter(docXml, rels, zipFiles) {
     }
   );
 
-  await Promise.all(jobs);
+  await mapLimit(jobs, Number(process.env.IMG_CONCURRENCY || 4), async (job) => job());
   return { outXml: docXml, imgMap };
 }
 
@@ -1291,9 +1306,10 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       },
     };
 
-    // ✅ Tăng tốc cho giao diện: frontend chỉ cần blocks + latex + images + rawText.
-    // Gọi ?light=1 sẽ không gửi lặp thêm exam/questions đầy đủ, giảm dung lượng JSON.
+    // ✅ Tăng tốc cho giao diện: frontend chỉ cần blocks + latex + images + rawPreview.
+    // Không gửi rawText đầy đủ ở light mode để giảm dung lượng JSON và giảm thời gian render mẫu.
     if (req.query.light === "1") {
+      const rawPreview = String(text || "").split(/\r?\n/).slice(0, 260).join("\n");
       return res.json({
         ok: true,
         total: exam.questions.length,
@@ -1301,7 +1317,8 @@ app.post("/upload", upload.single("file"), async (req, res) => {
         blocks,
         latex: latexMap,
         images,
-        rawText: text,
+        rawPreview,
+        rawTextTruncated: String(text || "").length > rawPreview.length,
         debug,
       });
     }
