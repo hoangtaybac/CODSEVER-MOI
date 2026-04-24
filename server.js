@@ -83,35 +83,10 @@ function decodeXmlEntities(s = "") {
     );
 }
 
-function createZipFileMap(zipFiles) {
-  const map = new Map();
-  for (const f of zipFiles || []) map.set(f.path, f);
-  return map;
-}
-
-
-async function mapLimit(entries, limit, worker) {
-  const arr = Array.from(entries || []);
-  const out = new Array(arr.length);
-  let i = 0;
-  const n = Math.max(1, Number(limit) || 1);
-  await Promise.all(Array.from({ length: Math.min(n, arr.length) }, async () => {
-    while (i < arr.length) {
-      const cur = i++;
-      out[cur] = await worker(arr[cur], cur);
-    }
-  }));
-  return out;
-}
-
-async function getZipEntryBuffer(zipFilesOrMap, p) {
-  const f = zipFilesOrMap instanceof Map
-    ? zipFilesOrMap.get(p)
-    : zipFilesOrMap.find((x) => x.path === p);
+async function getZipEntryBuffer(zipFiles, p) {
+  const f = zipFiles.find((x) => x.path === p);
   if (!f) return null;
-  if (f.__cachedBuffer) return f.__cachedBuffer;
-  f.__cachedBuffer = await f.buffer();
-  return f.__cachedBuffer;
+  return await f.buffer();
 }
 
 /* ================= Inkscape Convert EMF/WMF -> PNG ================= */
@@ -497,7 +472,7 @@ function mtableMathMLToLatexFallback(mathml) {
   else if (openMark === "(") left = "\\left(";
   else if (openMark === "|") left = "\\left|";
 
-  if (closeMark === "]") right = "\\right.";
+  if (closeMark === "]") right = "\\right]";
   else if (closeMark === "}") right = "\\right\\}";
   else if (closeMark === ")") right = "\\right)";
   else if (closeMark === "|") right = "\\right|";
@@ -626,10 +601,8 @@ async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
 
   const latexMap = {};
 
-  await mapLimit(
-    Object.entries(found),
-    Number(process.env.MT_CONCURRENCY || 3),
-    async ([key, info]) => {
+  await Promise.all(
+    Object.entries(found).map(async ([key, info]) => {
       const oleFull = normalizeTargetToWordPath(info.oleTarget);
       const oleBuf = await getZipEntryBuffer(zipFiles, oleFull);
 
@@ -681,7 +654,7 @@ async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
       }
 
       latexMap[key] = "";
-    }
+    })
   );
 
   return { outXml: docXml, latexMap };
@@ -699,7 +672,8 @@ async function tokenizeImagesAfter(docXml, rels, zipFiles) {
     if (!target) return;
     const full = normalizeTargetToWordPath(target);
 
-    jobs.push(async () => {
+    jobs.push(
+      (async () => {
         const buf = await getZipEntryBuffer(zipFiles, full);
         if (!buf) return;
 
@@ -714,7 +688,8 @@ async function tokenizeImagesAfter(docXml, rels, zipFiles) {
           } catch {}
         }
         imgMap[key] = `data:${mime};base64,${buf.toString("base64")}`;
-      });
+      })()
+    );
   };
 
   // ✅ FIX DUY NHẤT: bắt cả <a:blip .../> và <a:blip ...> + cả r:embed và r:link
@@ -736,7 +711,7 @@ async function tokenizeImagesAfter(docXml, rels, zipFiles) {
     }
   );
 
-  await mapLimit(jobs, Number(process.env.IMG_CONCURRENCY || 4), async (job) => job());
+  await Promise.all(jobs);
   return { outXml: docXml, imgMap };
 }
 
@@ -1256,10 +1231,11 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     if (!req.file?.buffer) throw new Error("No file uploaded");
 
     const zip = await unzipper.Open.buffer(req.file.buffer);
-    const zipFileMap = createZipFileMap(zip.files);
 
-    const docEntry = zipFileMap.get("word/document.xml");
-    const relEntry = zipFileMap.get("word/_rels/document.xml.rels");
+    const docEntry = zip.files.find((f) => f.path === "word/document.xml");
+    const relEntry = zip.files.find(
+      (f) => f.path === "word/_rels/document.xml.rels"
+    );
     if (!docEntry || !relEntry)
       throw new Error("Missing document.xml or document.xml.rels");
 
@@ -1269,12 +1245,12 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     // 1) MathType -> LaTeX (and fallback images)
     const images = {};
-    const mt = await tokenizeMathTypeOleFirst(docXml, rels, zipFileMap, images);
+    const mt = await tokenizeMathTypeOleFirst(docXml, rels, zip.files, images);
     docXml = mt.outXml;
     const latexMap = mt.latexMap;
 
     // 2) normal images
-    const imgTok = await tokenizeImagesAfter(docXml, rels, zipFileMap);
+    const imgTok = await tokenizeImagesAfter(docXml, rels, zip.files);
     docXml = imgTok.outXml;
     Object.assign(images, imgTok.imgMap);
 
@@ -1295,34 +1271,6 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     const questions = legacyQuestionsFromExam(exam);
 
-    const debug = {
-      latexCount: Object.keys(latexMap).length,
-      imagesCount: Object.keys(images).length,
-      exam: {
-        questions: exam.questions.length,
-        mcq: exam.questions.filter((x) => x.type === "mcq").length,
-        tf4: exam.questions.filter((x) => x.type === "tf4").length,
-        short: exam.questions.filter((x) => x.type === "short").length,
-      },
-    };
-
-    // ✅ Tăng tốc cho giao diện: frontend chỉ cần blocks + latex + images + rawPreview.
-    // Không gửi rawText đầy đủ ở light mode để giảm dung lượng JSON và giảm thời gian render mẫu.
-    if (req.query.light === "1") {
-      const rawPreview = String(text || "").split(/\r?\n/).slice(0, 260).join("\n");
-      return res.json({
-        ok: true,
-        total: exam.questions.length,
-        sections,
-        blocks,
-        latex: latexMap,
-        images,
-        rawPreview,
-        rawTextTruncated: String(text || "").length > rawPreview.length,
-        debug,
-      });
-    }
-
     res.json({
       ok: true,
       total: exam.questions.length,
@@ -1333,9 +1281,17 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       latex: latexMap,
       images,
       rawText: text,
-      debug,
+      debug: {
+        latexCount: Object.keys(latexMap).length,
+        imagesCount: Object.keys(images).length,
+        exam: {
+          questions: exam.questions.length,
+          mcq: exam.questions.filter((x) => x.type === "mcq").length,
+          tf4: exam.questions.filter((x) => x.type === "tf4").length,
+          short: exam.questions.filter((x) => x.type === "short").length,
+        },
+      },
     });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ ok: false, error: err?.message || String(err) });
