@@ -1285,7 +1285,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       blocks,
       latex: latexMap,
       images,
-      rawText: text,
+      rawText: full ? text : '',
       debug: {
         latexCount: Object.keys(latexMap).length,
         imagesCount: Object.keys(images).length,
