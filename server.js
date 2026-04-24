@@ -91,131 +91,43 @@ async function getZipEntryBuffer(zipFiles, p) {
 
 /* ================= Inkscape Convert EMF/WMF -> PNG ================= */
 
-function runConvertCommand(cmd, args, timeout = 30000) {
+function inkscapeConvertToPng(inputPath, outputPath) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(stderr || err.message));
-      resolve(true);
-    });
+    execFile(
+      "inkscape",
+      [
+        inputPath,
+        "--export-type=png",
+        `--export-filename=${outputPath}`,
+        "--export-area-drawing",
+        "--export-background-opacity=0",
+      ],
+      { timeout: 30000 },
+      (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message));
+        resolve(true);
+      }
+    );
   });
-}
-
-function commandExists(cmd) {
-  try {
-    execFileSync(process.platform === "win32" ? "where" : "which", [cmd], {
-      stdio: "ignore",
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function inkscapeConvertToPng(inputPath, outputPath) {
-  await runConvertCommand(
-    "inkscape",
-    [
-      inputPath,
-      "--export-type=png",
-      `--export-filename=${outputPath}`,
-      "--export-area-drawing",
-      "--export-background-opacity=0",
-    ],
-    30000
-  );
-}
-
-async function imageMagickConvertToPng(inputPath, outputPath) {
-  const magick = commandExists("magick") ? "magick" : "convert";
-  await runConvertCommand(magick, [inputPath, outputPath], 30000);
-}
-
-async function libreOfficeConvertToPng(inputPath, outputDir) {
-  const soffice = commandExists("soffice") ? "soffice" : "libreoffice";
-  await runConvertCommand(
-    soffice,
-    [
-      "--headless",
-      "--convert-to",
-      "png",
-      "--outdir",
-      outputDir,
-      inputPath,
-    ],
-    45000
-  );
 }
 
 async function maybeConvertEmfWmfToPng(buf, filename) {
   const ext = extOf(filename);
   if (ext !== "emf" && ext !== "wmf") return null;
 
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mtype-vector-"));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mtype-"));
   const inPath = path.join(tmpDir, `in.${ext}`);
   const outPath = path.join(tmpDir, "out.png");
-  const loOutPath = path.join(tmpDir, `in.png`);
 
   try {
     fs.writeFileSync(inPath, buf);
-
-    // Ưu tiên Inkscape, sau đó ImageMagick, cuối cùng LibreOffice.
-    // Mục tiêu: mọi công thức Equation/MathType dạng WMF/EMF đều được trả về PNG
-    // để trình duyệt hiển thị được, không bị mất trắng như Câu 12.
-    const attempts = [];
-    if (commandExists("inkscape")) {
-      attempts.push(async () => {
-        await inkscapeConvertToPng(inPath, outPath);
-        return outPath;
-      });
-    }
-    if (commandExists("magick") || commandExists("convert")) {
-      attempts.push(async () => {
-        await imageMagickConvertToPng(inPath, outPath);
-        return outPath;
-      });
-    }
-    if (commandExists("soffice") || commandExists("libreoffice")) {
-      attempts.push(async () => {
-        await libreOfficeConvertToPng(inPath, tmpDir);
-        return fs.existsSync(loOutPath) ? loOutPath : outPath;
-      });
-    }
-
-    for (const attempt of attempts) {
-      try {
-        const p = await attempt();
-        if (p && fs.existsSync(p) && fs.statSync(p).size > 0) {
-          return fs.readFileSync(p);
-        }
-      } catch {}
-    }
-
-    return null;
+    await inkscapeConvertToPng(inPath, outPath);
+    return fs.readFileSync(outPath);
   } finally {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {}
   }
-}
-
-async function storeImageAsBrowserSafeDataUrl(images, key, imgBuf, filename) {
-  const mime = guessMimeFromFilename(filename);
-
-  if (mime === "image/emf" || mime === "image/wmf") {
-    const pngBuf = await maybeConvertEmfWmfToPng(imgBuf, filename);
-    if (pngBuf) {
-      images[key] = `data:image/png;base64,${pngBuf.toString("base64")}`;
-      return true;
-    }
-
-    // Không gán data:image/wmf/emf vì Chrome/Edge thường không hiển thị.
-    // Trả marker rỗng để frontend không hiện biểu tượng ảnh lỗi.
-    images[key] = "";
-    return false;
-  }
-
-  images[key] = `data:${mime};base64,${imgBuf.toString("base64")}`;
-  return true;
 }
 
 /* ================= MathType OLE -> MathML -> LaTeX ================= */
@@ -661,57 +573,6 @@ function mathmlToLatexSafe(mml, _depth = 0) {
   }
 }
 
-
-function latexHasBalancedBraces(s = "") {
-  let n = 0;
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] === "\\") { i++; continue; }
-    if (s[i] === "{") n++;
-    if (s[i] === "}") n--;
-    if (n < 0) return false;
-  }
-  return n === 0;
-}
-
-function latexHasBalancedParensBrackets(s = "") {
-  const stack = [];
-  const pairs = { ")": "(", "]": "[" };
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
-    if (ch === "\\") { i++; continue; }
-    if (ch === "(" || ch === "[") stack.push(ch);
-    else if (ch === ")" || ch === "]") {
-      if (stack.pop() !== pairs[ch]) return false;
-    }
-  }
-  return stack.length === 0;
-}
-
-function latexLooksBroken(latex = "", mathmlMaybe = "") {
-  const s = String(latex || "").trim();
-  const m = String(mathmlMaybe || "");
-
-  // Rỗng hoặc chỉ có dấu chấm/dấu câu: chắc chắn không phải công thức đầy đủ.
-  if (!s) return true;
-  if (/^[\s.,;:]+$/.test(s)) return true;
-
-  // Công thức bị cụt thường mất ngoặc đóng, hoặc kết thúc bằng toán tử.
-  if (!latexHasBalancedBraces(s)) return true;
-  if (!latexHasBalancedParensBrackets(s)) return true;
-  if (/[+\-*/=,;:]\s*$/.test(s)) return true;
-  if (/\\(frac|sqrt|left|right|begin|end)\s*$/.test(s)) return true;
-
-  // MathML/MTEF có cấu trúc lớn nhưng LaTeX trả về quá ngắn => converter đã rơi mất nội dung.
-  const plainLen = s.replace(/\\[a-zA-Z]+/g, "").replace(/[{}\s]/g, "").length;
-  if (m.length > 400 && plainLen < 3) return true;
-
-  // Có phân số/căn trong MathML nhưng LaTeX không còn dấu hiệu tương ứng, thường là convert thiếu.
-  if (/<mfrac\b|<frac\b/i.test(m) && !/\\frac\b/.test(s)) return true;
-  if (SQRT_MATHML_RE.test(m) && !/\\sqrt\b|\\root\b/.test(s)) return true;
-
-  return false;
-}
-
 /* ================= MathType FIRST ================= */
 
 async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
@@ -756,30 +617,40 @@ async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
         }
       }
 
-      // ✅ Luôn lưu ảnh preview trước. Nhiều công thức MathType/OLE (như Câu 12)
-      // converter có thể trả LaTeX bị cụt: khi đó frontend sẽ dùng ảnh này để không mất công thức.
-      let hasPreviewImage = false;
+      // ✅ normalize trước convert (giúp cả trường hợp m:msqrt)
+      if (mml) mml = normalizeMathMLForConvert(mml);
+
+      const latex = mml ? mathmlToLatexSafe(mml) : "";
+      if (latex) {
+        latexMap[key] = latex;
+        return;
+      }
+
+      // fallback preview image
       if (info.previewRid) {
         const t = rels.get(info.previewRid);
         if (t) {
           const imgFull = normalizeTargetToWordPath(t);
           const imgBuf = await getZipEntryBuffer(zipFiles, imgFull);
           if (imgBuf) {
-            hasPreviewImage = await storeImageAsBrowserSafeDataUrl(images, `fallback_${key}`, imgBuf, imgFull);
+            const mime = guessMimeFromFilename(imgFull);
+            if (mime === "image/emf" || mime === "image/wmf") {
+              try {
+                const pngBuf = await maybeConvertEmfWmfToPng(imgBuf, imgFull);
+                if (pngBuf) {
+                  images[`fallback_${key}`] = `data:image/png;base64,${pngBuf.toString(
+                    "base64"
+                  )}`;
+                  latexMap[key] = "";
+                  return;
+                }
+              } catch {}
+            }
+            images[`fallback_${key}`] = `data:${mime};base64,${imgBuf.toString(
+              "base64"
+            )}`;
           }
         }
-      }
-
-      // ✅ normalize trước convert (giúp cả trường hợp m:msqrt)
-      if (mml) mml = normalizeMathMLForConvert(mml);
-
-      const latex = mml ? mathmlToLatexSafe(mml) : "";
-
-      // Nếu LaTeX bị cụt hoặc quá nghèo nội dung, bỏ LaTeX để HTML tự dùng ảnh fallback.
-      // Không thay đổi logic parse đề: token [!m:...] vẫn giữ nguyên vị trí.
-      if (latex && !latexLooksBroken(latex, mml)) {
-        latexMap[key] = latex;
-        return;
       }
 
       latexMap[key] = "";
@@ -806,7 +677,17 @@ async function tokenizeImagesAfter(docXml, rels, zipFiles) {
         const buf = await getZipEntryBuffer(zipFiles, full);
         if (!buf) return;
 
-        await storeImageAsBrowserSafeDataUrl(imgMap, key, buf, full);
+        const mime = guessMimeFromFilename(full);
+        if (mime === "image/emf" || mime === "image/wmf") {
+          try {
+            const pngBuf = await maybeConvertEmfWmfToPng(buf, full);
+            if (pngBuf) {
+              imgMap[key] = `data:image/png;base64,${pngBuf.toString("base64")}`;
+              return;
+            }
+          } catch {}
+        }
+        imgMap[key] = `data:${mime};base64,${buf.toString("base64")}`;
       })()
     );
   };
