@@ -26,6 +26,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { execFile, execFileSync } from "child_process";
+import crypto from "crypto";
 import { MathMLToLaTeX } from "mathml-to-latex";
 
 const app = express();
@@ -83,10 +84,45 @@ function decodeXmlEntities(s = "") {
     );
 }
 
-async function getZipEntryBuffer(zipFiles, p) {
-  const f = zipFiles.find((x) => x.path === p);
+async function getZipEntryBuffer(zipSource, p) {
+  const f = zipSource instanceof Map ? zipSource.get(p) : zipSource.find((x) => x.path === p);
   if (!f) return null;
-  return await f.buffer();
+  if (f.__cachedBuffer) return f.__cachedBuffer;
+  f.__cachedBuffer = await f.buffer();
+  return f.__cachedBuffer;
+}
+
+function makeZipMap(zip) {
+  const map = new Map();
+  for (const f of zip.files || []) map.set(f.path, f);
+  return map;
+}
+
+const RESPONSE_CACHE = new Map();
+const CACHE_TTL_MS = 30 * 60 * 1000;
+function cleanupResponseCache() {
+  const now = Date.now();
+  for (const [k, v] of RESPONSE_CACHE) {
+    if (now - (v.at || 0) > CACHE_TTL_MS) RESPONSE_CACHE.delete(k);
+  }
+}
+setInterval(cleanupResponseCache, 5 * 60 * 1000).unref?.();
+function fileHash(buf) {
+  return crypto.createHash("sha1").update(buf).digest("hex");
+}
+
+const OLE_CONVERSION_CACHE = new Map();
+async function mapLimit(entries, limit, worker) {
+  const out = [];
+  let i = 0;
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, entries.length)) }, async () => {
+    while (i < entries.length) {
+      const current = i++;
+      out[current] = await worker(entries[current], current);
+    }
+  });
+  await Promise.all(runners);
+  return out;
 }
 
 /* ================= Inkscape Convert EMF/WMF -> PNG ================= */
@@ -601,11 +637,19 @@ async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
 
   const latexMap = {};
 
-  await Promise.all(
-    Object.entries(found).map(async ([key, info]) => {
-      const oleFull = normalizeTargetToWordPath(info.oleTarget);
-      const oleBuf = await getZipEntryBuffer(zipFiles, oleFull);
+  await mapLimit(Object.entries(found), Number(process.env.MTYPE_CONCURRENCY || 4), async ([key, info]) => {
+    const oleFull = normalizeTargetToWordPath(info.oleTarget);
+    const oleBuf = await getZipEntryBuffer(zipFiles, oleFull);
 
+    let cachedLatex = null;
+    let oleHash = "";
+    if (oleBuf) {
+      oleHash = crypto.createHash("sha1").update(oleBuf).digest("hex");
+      if (OLE_CONVERSION_CACHE.has(oleHash)) cachedLatex = OLE_CONVERSION_CACHE.get(oleHash);
+    }
+
+    let latex = cachedLatex;
+    if (latex === null) {
       let mml = "";
       if (oleBuf) mml = extractMathMLFromOleScan(oleBuf) || "";
 
@@ -617,45 +661,42 @@ async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
         }
       }
 
-      // ✅ normalize trước convert (giúp cả trường hợp m:msqrt)
       if (mml) mml = normalizeMathMLForConvert(mml);
+      latex = mml ? mathmlToLatexSafe(mml) : "";
+      if (oleHash) OLE_CONVERSION_CACHE.set(oleHash, latex || "");
+    }
 
-      const latex = mml ? mathmlToLatexSafe(mml) : "";
-      if (latex) {
-        latexMap[key] = latex;
-        return;
-      }
+    if (latex) {
+      latexMap[key] = latex;
+      return;
+    }
 
-      // fallback preview image
-      if (info.previewRid) {
-        const t = rels.get(info.previewRid);
-        if (t) {
-          const imgFull = normalizeTargetToWordPath(t);
-          const imgBuf = await getZipEntryBuffer(zipFiles, imgFull);
-          if (imgBuf) {
-            const mime = guessMimeFromFilename(imgFull);
-            if (mime === "image/emf" || mime === "image/wmf") {
-              try {
-                const pngBuf = await maybeConvertEmfWmfToPng(imgBuf, imgFull);
-                if (pngBuf) {
-                  images[`fallback_${key}`] = `data:image/png;base64,${pngBuf.toString(
-                    "base64"
-                  )}`;
-                  latexMap[key] = "";
-                  return;
-                }
-              } catch {}
-            }
-            images[`fallback_${key}`] = `data:${mime};base64,${imgBuf.toString(
-              "base64"
-            )}`;
+    // fallback preview image giữ nguyên logic cũ
+    if (info.previewRid) {
+      const t = rels.get(info.previewRid);
+      if (t) {
+        const imgFull = normalizeTargetToWordPath(t);
+        const imgBuf = await getZipEntryBuffer(zipFiles, imgFull);
+        if (imgBuf) {
+          const mime = guessMimeFromFilename(imgFull);
+          if (mime === "image/emf" || mime === "image/wmf") {
+            try {
+              const pngBuf = await maybeConvertEmfWmfToPng(imgBuf, imgFull);
+              if (pngBuf) {
+                images[`fallback_${key}`] = `data:image/png;base64,${pngBuf.toString("base64")}`;
+                latexMap[key] = "";
+                return;
+              }
+            } catch {}
           }
+          images[`fallback_${key}`] = `data:${mime};base64,${imgBuf.toString("base64")}`;
         }
       }
+    }
 
-      latexMap[key] = "";
-    })
-  );
+    latexMap[key] = "";
+  });
+
 
   return { outXml: docXml, latexMap };
 }
@@ -672,25 +713,31 @@ async function tokenizeImagesAfter(docXml, rels, zipFiles) {
     if (!target) return;
     const full = normalizeTargetToWordPath(target);
 
-    jobs.push(
-      (async () => {
-        const buf = await getZipEntryBuffer(zipFiles, full);
-        if (!buf) return;
+    jobs.push(async () => {
+      const buf = await getZipEntryBuffer(zipFiles, full);
+      if (!buf) return;
 
-        const mime = guessMimeFromFilename(full);
-        if (mime === "image/emf" || mime === "image/wmf") {
-          try {
-            const pngBuf = await maybeConvertEmfWmfToPng(buf, full);
-            if (pngBuf) {
-              imgMap[key] = `data:image/png;base64,${pngBuf.toString("base64")}`;
-              return;
-            }
-          } catch {}
-        }
-        imgMap[key] = `data:${mime};base64,${buf.toString("base64")}`;
-      })()
-    );
+      const mediaHash = crypto.createHash("sha1").update(buf).digest("hex");
+      const cacheKey = `media:${mediaHash}`;
+      if (OLE_CONVERSION_CACHE.has(cacheKey)) {
+        imgMap[key] = OLE_CONVERSION_CACHE.get(cacheKey);
+        return;
+      }
+
+      const mime = guessMimeFromFilename(full);
+      let dataUrl = "";
+      if (mime === "image/emf" || mime === "image/wmf") {
+        try {
+          const pngBuf = await maybeConvertEmfWmfToPng(buf, full);
+          if (pngBuf) dataUrl = `data:image/png;base64,${pngBuf.toString("base64")}`;
+        } catch {}
+      }
+      if (!dataUrl) dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
+      OLE_CONVERSION_CACHE.set(cacheKey, dataUrl);
+      imgMap[key] = dataUrl;
+    });
   };
+
 
   // ✅ FIX DUY NHẤT: bắt cả <a:blip .../> và <a:blip ...> + cả r:embed và r:link
   docXml = docXml.replace(
@@ -711,7 +758,7 @@ async function tokenizeImagesAfter(docXml, rels, zipFiles) {
     }
   );
 
-  await Promise.all(jobs);
+  await mapLimit(jobs, Number(process.env.IMAGE_CONCURRENCY || 3), async (job) => job());
   return { outXml: docXml, imgMap };
 }
 
@@ -1230,58 +1277,57 @@ app.post("/upload", upload.single("file"), async (req, res) => {
   try {
     if (!req.file?.buffer) throw new Error("No file uploaded");
 
-    const zip = await unzipper.Open.buffer(req.file.buffer);
+    const compact = req.query.compact !== "0"; // mặc định trả gọn để nhanh như Azota
+    const hash = fileHash(req.file.buffer) + (compact ? ":compact" : ":full");
+    const cached = RESPONSE_CACHE.get(hash);
+    if (cached?.data) {
+      return res.json({ ...cached.data, cached: true });
+    }
 
-    const docEntry = zip.files.find((f) => f.path === "word/document.xml");
-    const relEntry = zip.files.find(
-      (f) => f.path === "word/_rels/document.xml.rels"
-    );
+    const t0 = Date.now();
+    const zip = await unzipper.Open.buffer(req.file.buffer);
+    const zipMap = makeZipMap(zip);
+
+    const docEntry = zipMap.get("word/document.xml");
+    const relEntry = zipMap.get("word/_rels/document.xml.rels");
     if (!docEntry || !relEntry)
       throw new Error("Missing document.xml or document.xml.rels");
 
-    let docXml = (await docEntry.buffer()).toString("utf8");
-    const relsXml = (await relEntry.buffer()).toString("utf8");
+    let docXml = (await getZipEntryBuffer(zipMap, "word/document.xml")).toString("utf8");
+    const relsXml = (await getZipEntryBuffer(zipMap, "word/_rels/document.xml.rels")).toString("utf8");
     const rels = parseRels(relsXml);
 
-    // 1) MathType -> LaTeX (and fallback images)
+    // 1) MathType -> LaTeX (GIỮ NGUYÊN thuật toán, chỉ đổi zipMap/cache để nhanh hơn)
     const images = {};
-    const mt = await tokenizeMathTypeOleFirst(docXml, rels, zip.files, images);
+    const mt = await tokenizeMathTypeOleFirst(docXml, rels, zipMap, images);
     docXml = mt.outXml;
     const latexMap = mt.latexMap;
 
     // 2) normal images
-    const imgTok = await tokenizeImagesAfter(docXml, rels, zip.files);
+    const imgTok = await tokenizeImagesAfter(docXml, rels, zipMap);
     docXml = imgTok.outXml;
     Object.assign(images, imgTok.imgMap);
 
-    // 3) text (giữ token + underline + ✅ TABLE)
+    // 3) text (giữ token + underline + TABLE)
     const text = wordXmlToTextKeepTokens(docXml);
 
     // 4) parse exam output (GIỮ NGUYÊN)
     const exam = parseExamFromText(text);
-
-    // sections theo vị trí + index câu toàn cục
     const sections = extractSectionTitles(text);
-
     exam.sections = sections;
-
     attachSectionOrderToQuestions(exam, sections);
-
     const blocks = buildOrderedBlocks(exam);
 
-    const questions = legacyQuestionsFromExam(exam);
-
-    res.json({
+    const response = {
       ok: true,
       total: exam.questions.length,
       sections,
       blocks,
-      exam,
-      questions,
       latex: latexMap,
       images,
-      rawText: text,
       debug: {
+        compact,
+        ms: Date.now() - t0,
         latexCount: Object.keys(latexMap).length,
         imagesCount: Object.keys(images).length,
         exam: {
@@ -1291,7 +1337,17 @@ app.post("/upload", upload.single("file"), async (req, res) => {
           short: exam.questions.filter((x) => x.type === "short").length,
         },
       },
-    });
+    };
+
+    // Chỉ khi cần debug mới trả các bản lặp rất nặng.
+    if (!compact) {
+      response.exam = exam;
+      response.questions = legacyQuestionsFromExam(exam);
+      response.rawText = text;
+    }
+
+    RESPONSE_CACHE.set(hash, { at: Date.now(), data: response });
+    res.json(response);
   } catch (err) {
     console.error(err);
     res.status(500).json({ ok: false, error: err?.message || String(err) });
