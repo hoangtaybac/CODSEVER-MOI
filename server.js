@@ -661,6 +661,57 @@ function mathmlToLatexSafe(mml, _depth = 0) {
   }
 }
 
+
+function latexHasBalancedBraces(s = "") {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "\\") { i++; continue; }
+    if (s[i] === "{") n++;
+    if (s[i] === "}") n--;
+    if (n < 0) return false;
+  }
+  return n === 0;
+}
+
+function latexHasBalancedParensBrackets(s = "") {
+  const stack = [];
+  const pairs = { ")": "(", "]": "[" };
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "\\") { i++; continue; }
+    if (ch === "(" || ch === "[") stack.push(ch);
+    else if (ch === ")" || ch === "]") {
+      if (stack.pop() !== pairs[ch]) return false;
+    }
+  }
+  return stack.length === 0;
+}
+
+function latexLooksBroken(latex = "", mathmlMaybe = "") {
+  const s = String(latex || "").trim();
+  const m = String(mathmlMaybe || "");
+
+  // Rỗng hoặc chỉ có dấu chấm/dấu câu: chắc chắn không phải công thức đầy đủ.
+  if (!s) return true;
+  if (/^[\s.,;:]+$/.test(s)) return true;
+
+  // Công thức bị cụt thường mất ngoặc đóng, hoặc kết thúc bằng toán tử.
+  if (!latexHasBalancedBraces(s)) return true;
+  if (!latexHasBalancedParensBrackets(s)) return true;
+  if (/[+\-*/=,;:]\s*$/.test(s)) return true;
+  if (/\\(frac|sqrt|left|right|begin|end)\s*$/.test(s)) return true;
+
+  // MathML/MTEF có cấu trúc lớn nhưng LaTeX trả về quá ngắn => converter đã rơi mất nội dung.
+  const plainLen = s.replace(/\\[a-zA-Z]+/g, "").replace(/[{}\s]/g, "").length;
+  if (m.length > 400 && plainLen < 3) return true;
+
+  // Có phân số/căn trong MathML nhưng LaTeX không còn dấu hiệu tương ứng, thường là convert thiếu.
+  if (/<mfrac\b|<frac\b/i.test(m) && !/\\frac\b/.test(s)) return true;
+  if (SQRT_MATHML_RE.test(m) && !/\\sqrt\b|\\root\b/.test(s)) return true;
+
+  return false;
+}
+
 /* ================= MathType FIRST ================= */
 
 async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
@@ -705,25 +756,30 @@ async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
         }
       }
 
-      // ✅ normalize trước convert (giúp cả trường hợp m:msqrt)
-      if (mml) mml = normalizeMathMLForConvert(mml);
-
-      const latex = mml ? mathmlToLatexSafe(mml) : "";
-      if (latex) {
-        latexMap[key] = latex;
-        return;
-      }
-
-      // fallback preview image
+      // ✅ Luôn lưu ảnh preview trước. Nhiều công thức MathType/OLE (như Câu 12)
+      // converter có thể trả LaTeX bị cụt: khi đó frontend sẽ dùng ảnh này để không mất công thức.
+      let hasPreviewImage = false;
       if (info.previewRid) {
         const t = rels.get(info.previewRid);
         if (t) {
           const imgFull = normalizeTargetToWordPath(t);
           const imgBuf = await getZipEntryBuffer(zipFiles, imgFull);
           if (imgBuf) {
-            await storeImageAsBrowserSafeDataUrl(images, `fallback_${key}`, imgBuf, imgFull);
+            hasPreviewImage = await storeImageAsBrowserSafeDataUrl(images, `fallback_${key}`, imgBuf, imgFull);
           }
         }
+      }
+
+      // ✅ normalize trước convert (giúp cả trường hợp m:msqrt)
+      if (mml) mml = normalizeMathMLForConvert(mml);
+
+      const latex = mml ? mathmlToLatexSafe(mml) : "";
+
+      // Nếu LaTeX bị cụt hoặc quá nghèo nội dung, bỏ LaTeX để HTML tự dùng ảnh fallback.
+      // Không thay đổi logic parse đề: token [!m:...] vẫn giữ nguyên vị trí.
+      if (latex && !latexLooksBroken(latex, mml)) {
+        latexMap[key] = latex;
+        return;
       }
 
       latexMap[key] = "";
