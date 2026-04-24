@@ -1273,21 +1273,23 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     const blocks = buildOrderedBlocks(exam);
 
-    const questions = legacyQuestionsFromExam(exam);
-
-    res.json({
+    // ✅ FAST RESPONSE:
+    // Frontend mới dùng `blocks`, nên không gửi lặp thêm `exam` + `questions` mặc định.
+    // Thuật toán chuyển đổi vẫn giữ nguyên; chỉ giảm JSON trả về để upload/hiển thị nhanh hơn.
+    // Nếu cần debug đầy đủ: gọi /upload?full=1
+    const full = String(req.query.full || "") === "1";
+    const payload = {
       ok: true,
       total: exam.questions.length,
       sections,
       blocks,
-      exam,
-      questions,
       latex: latexMap,
       images,
       rawText: text,
       debug: {
         latexCount: Object.keys(latexMap).length,
         imagesCount: Object.keys(images).length,
+        lean: !full,
         exam: {
           questions: exam.questions.length,
           mcq: exam.questions.filter((x) => x.type === "mcq").length,
@@ -1295,7 +1297,14 @@ app.post("/upload", upload.single("file"), async (req, res) => {
           short: exam.questions.filter((x) => x.type === "short").length,
         },
       },
-    });
+    };
+
+    if (full) {
+      payload.exam = exam;
+      payload.questions = legacyQuestionsFromExam(exam);
+    }
+
+    res.json(payload);
   } catch (err) {
     console.error(err);
     res.status(500).json({ ok: false, error: err?.message || String(err) });
