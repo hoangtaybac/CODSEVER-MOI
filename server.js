@@ -84,9 +84,14 @@ function decodeXmlEntities(s = "") {
 }
 
 async function getZipEntryBuffer(zipFiles, p) {
-  const f = zipFiles.find((x) => x.path === p);
+  // ✅ TURBO: tránh zip.files.find(...) lặp lại hàng trăm lần khi file Word nhiều ảnh/công thức.
+  let f = null;
+  if (zipFiles && typeof zipFiles.get === "function") f = zipFiles.get(p);
+  else f = zipFiles.find((x) => x.path === p);
   if (!f) return null;
-  return await f.buffer();
+  if (f.__buf) return f.__buf;
+  f.__buf = await f.buffer();
+  return f.__buf;
 }
 
 /* ================= Inkscape Convert EMF/WMF -> PNG ================= */
@@ -575,7 +580,7 @@ function mathmlToLatexSafe(mml, _depth = 0) {
 
 /* ================= MathType FIRST ================= */
 
-async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
+async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images, options = {}) {
   let idx = 0;
   const found = {};
   const OBJECT_RE = /<w:object[\s\S]*?<\/w:object>/g;
@@ -609,7 +614,9 @@ async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
       let mml = "";
       if (oleBuf) mml = extractMathMLFromOleScan(oleBuf) || "";
 
-      if (!mml && oleBuf) {
+      // ✅ TURBO: ruby mt2mml là phần chậm nhất. Khi turbo=1 chỉ dùng MathML scan nhanh trước.
+      // Nếu công thức nào không đọc được, vẫn giữ token để bấm sửa, không làm treo upload.
+      if (!mml && oleBuf && !options.turbo) {
         try {
           mml = await rubyOleToMathML(oleBuf);
         } catch {
@@ -662,7 +669,7 @@ async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
 
 /* ================= Images AFTER MathType ================= */
 
-async function tokenizeImagesAfter(docXml, rels, zipFiles) {
+async function tokenizeImagesAfter(docXml, rels, zipFiles, options = {}) {
   let idx = 0;
   const imgMap = {};
   const jobs = [];
@@ -679,6 +686,8 @@ async function tokenizeImagesAfter(docXml, rels, zipFiles) {
 
         const mime = guessMimeFromFilename(full);
         if (mime === "image/emf" || mime === "image/wmf") {
+          // ✅ TURBO: convert EMF/WMF bằng Inkscape rất chậm; bỏ qua ở chế độ turbo.
+          if (options.turbo) return;
           try {
             const pngBuf = await maybeConvertEmfWmfToPng(buf, full);
             if (pngBuf) {
@@ -1230,12 +1239,14 @@ app.post("/upload", upload.single("file"), async (req, res) => {
   try {
     if (!req.file?.buffer) throw new Error("No file uploaded");
 
+    const turbo = req.query.turbo === "1" || req.query.fast === "1";
+    const light = req.query.light === "1";
     const zip = await unzipper.Open.buffer(req.file.buffer);
+    // ✅ TURBO: tạo map đường dẫn -> entry để đọc file trong zip nhanh hơn.
+    const zipMap = new Map(zip.files.map((f) => [f.path, f]));
 
-    const docEntry = zip.files.find((f) => f.path === "word/document.xml");
-    const relEntry = zip.files.find(
-      (f) => f.path === "word/_rels/document.xml.rels"
-    );
+    const docEntry = zipMap.get("word/document.xml");
+    const relEntry = zipMap.get("word/_rels/document.xml.rels");
     if (!docEntry || !relEntry)
       throw new Error("Missing document.xml or document.xml.rels");
 
@@ -1245,12 +1256,12 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     // 1) MathType -> LaTeX (and fallback images)
     const images = {};
-    const mt = await tokenizeMathTypeOleFirst(docXml, rels, zip.files, images);
+    const mt = await tokenizeMathTypeOleFirst(docXml, rels, zipMap, images, { turbo });
     docXml = mt.outXml;
     const latexMap = mt.latexMap;
 
     // 2) normal images
-    const imgTok = await tokenizeImagesAfter(docXml, rels, zip.files);
+    const imgTok = await tokenizeImagesAfter(docXml, rels, zipMap, { turbo });
     docXml = imgTok.outXml;
     Object.assign(images, imgTok.imgMap);
 
@@ -1276,14 +1287,16 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       total: exam.questions.length,
       sections,
       blocks,
-      exam,
-      questions,
+      exam: light ? { questions: exam.questions } : exam,
+      questions: light ? undefined : questions,
       latex: latexMap,
       images,
-      rawText: text,
+      rawText: light ? text.split(/\n/).slice(0, 300).join("\n") : text,
       debug: {
         latexCount: Object.keys(latexMap).length,
         imagesCount: Object.keys(images).length,
+        turbo,
+        light,
         exam: {
           questions: exam.questions.length,
           mcq: exam.questions.filter((x) => x.type === "mcq").length,
