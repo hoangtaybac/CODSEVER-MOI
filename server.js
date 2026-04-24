@@ -402,6 +402,85 @@ function fixPiecewiseFunction(latex) {
   return s;
 }
 
+
+
+// ✅ FIX hệ phương trình / ngoặc vuông dạng MathML <mtable>
+// Một số công thức Word/MathType dạng hệ được lưu bằng mtable. Thư viện convert đôi khi làm rơi cấu trúc dòng,
+// khiến MathJax nhận thành: 12-x=01122+3x=66x=8. Fallback này tự dựng lại array/cases.
+function mathMLCellToLatex(cellXml) {
+  const cell = String(cellXml || "").trim();
+  if (!cell) return "";
+  try {
+    let out = MathMLToLaTeX.convert(`<math>${cell}</math>`) || "";
+    out = postProcessLatex(out, `<math>${cell}</math>`);
+    if (out) return out;
+  } catch {}
+
+  return decodeXmlEntities(
+    cell
+      .replace(/<mspace\b[^>]*\/>/gi, " ")
+      .replace(/<mo\b[^>]*>([\s\S]*?)<\/mo>/gi, "$1")
+      .replace(/<mi\b[^>]*>([\s\S]*?)<\/mi>/gi, "$1")
+      .replace(/<mn\b[^>]*>([\s\S]*?)<\/mn>/gi, "$1")
+      .replace(/<mtext\b[^>]*>([\s\S]*?)<\/mtext>/gi, "$1")
+      .replace(/<[^>]+>/g, "")
+  ).replace(/\s+/g, " ").trim();
+}
+
+function mtableMathMLToLatexFallback(mathml) {
+  const m = String(mathml || "");
+  if (!/<mtable\b/i.test(m)) return "";
+
+  const tableMatch = m.match(/<mtable\b[^>]*>[\s\S]*?<\/mtable>/i);
+  if (!tableMatch) return "";
+
+  const table = tableMatch[0];
+  const rowMatches = table.match(/<mtr\b[^>]*>[\s\S]*?<\/mtr>/gi) || [];
+  if (!rowMatches.length) return "";
+
+  const rows = rowMatches.map((row) => {
+    const cells = row.match(/<mtd\b[^>]*>[\s\S]*?<\/mtd>/gi) || [];
+    const parts = cells.map((td) => {
+      const inner = td.replace(/^<mtd\b[^>]*>/i, "").replace(/<\/mtd>$/i, "");
+      return mathMLCellToLatex(inner);
+    }).filter(Boolean);
+    return parts.join(" & ");
+  }).filter(Boolean);
+
+  if (!rows.length) return "";
+
+  const cols = Math.max(...rows.map(r => (r.match(/&/g) || []).length + 1));
+  const align = cols <= 1 ? "l" : "l".repeat(cols);
+  const body = rows.join(" \\\\ ");
+
+  let left = "";
+  let right = "";
+
+  const before = m.slice(0, tableMatch.index);
+  const after = m.slice(tableMatch.index + table.length);
+
+  const openAttr = m.match(/<mfenced\b[^>]*\bopen\s*=\s*"([^"]*)"/i)?.[1];
+  const closeAttr = m.match(/<mfenced\b[^>]*\bclose\s*=\s*"([^"]*)"/i)?.[1];
+  const beforeText = decodeXmlEntities(before.replace(/<[^>]+>/g, "")).trim();
+  const afterText = decodeXmlEntities(after.replace(/<[^>]+>/g, "")).trim();
+
+  const openMark = openAttr ?? beforeText.slice(-1);
+  const closeMark = closeAttr ?? afterText.charAt(0);
+
+  if (openMark === "[") left = "\\left[";
+  else if (openMark === "{") left = "\\left\\{";
+  else if (openMark === "(") left = "\\left(";
+  else if (openMark === "|") left = "\\left|";
+
+  if (closeMark === "]") right = "\\right]";
+  else if (closeMark === "}") right = "\\right\\}";
+  else if (closeMark === ")") right = "\\right)";
+  else if (closeMark === "|") right = "\\right|";
+  else if (left) right = "\\right.";
+
+  return `${left}\\begin{array}{${align}} ${body} \\end{array}${right}`.trim();
+}
+
 function fixSqrtLatex(latex, mathmlMaybe = "") {
   let s = String(latex || "");
 
@@ -425,7 +504,10 @@ function postProcessLatex(latex, mathmlMaybe = "") {
   s = restoreArrowAndCoreCommands(s);
   s = fixPiecewiseFunction(s);
   s = fixSqrtLatex(s, mathmlMaybe);
-  return String(s || "").replace(/\s+/g, " ").trim();
+  return String(s || "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s*\\\\\s*/g, " \\\\ ")
+    .trim();
 }
 
 /** ✅ Radical-safe: tokenize msqrt -> convert -> rebuild sqrt */
@@ -436,6 +518,10 @@ function mathmlToLatexSafe(mml, _depth = 0) {
     if (!m.includes("<math")) return "";
 
     m = normalizeMathMLForConvert(m);
+
+    // ✅ Nếu là hệ/bảng MathML thì tự dựng array để giữ từng dòng.
+    const tableFallback = mtableMathMLToLatexFallback(m);
+    if (tableFallback) return postProcessLatex(tableFallback, m);
 
     const tok = tokenizeMsqrtBlocks(m);
     const mTok = tok.out;
