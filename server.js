@@ -91,43 +91,131 @@ async function getZipEntryBuffer(zipFiles, p) {
 
 /* ================= Inkscape Convert EMF/WMF -> PNG ================= */
 
-function inkscapeConvertToPng(inputPath, outputPath) {
+function runConvertCommand(cmd, args, timeout = 30000) {
   return new Promise((resolve, reject) => {
-    execFile(
-      "inkscape",
-      [
-        inputPath,
-        "--export-type=png",
-        `--export-filename=${outputPath}`,
-        "--export-area-drawing",
-        "--export-background-opacity=0",
-      ],
-      { timeout: 30000 },
-      (err, stdout, stderr) => {
-        if (err) return reject(new Error(stderr || err.message));
-        resolve(true);
-      }
-    );
+    execFile(cmd, args, { timeout }, (err, stdout, stderr) => {
+      if (err) return reject(new Error(stderr || err.message));
+      resolve(true);
+    });
   });
+}
+
+function commandExists(cmd) {
+  try {
+    execFileSync(process.platform === "win32" ? "where" : "which", [cmd], {
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function inkscapeConvertToPng(inputPath, outputPath) {
+  await runConvertCommand(
+    "inkscape",
+    [
+      inputPath,
+      "--export-type=png",
+      `--export-filename=${outputPath}`,
+      "--export-area-drawing",
+      "--export-background-opacity=0",
+    ],
+    30000
+  );
+}
+
+async function imageMagickConvertToPng(inputPath, outputPath) {
+  const magick = commandExists("magick") ? "magick" : "convert";
+  await runConvertCommand(magick, [inputPath, outputPath], 30000);
+}
+
+async function libreOfficeConvertToPng(inputPath, outputDir) {
+  const soffice = commandExists("soffice") ? "soffice" : "libreoffice";
+  await runConvertCommand(
+    soffice,
+    [
+      "--headless",
+      "--convert-to",
+      "png",
+      "--outdir",
+      outputDir,
+      inputPath,
+    ],
+    45000
+  );
 }
 
 async function maybeConvertEmfWmfToPng(buf, filename) {
   const ext = extOf(filename);
   if (ext !== "emf" && ext !== "wmf") return null;
 
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mtype-"));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mtype-vector-"));
   const inPath = path.join(tmpDir, `in.${ext}`);
   const outPath = path.join(tmpDir, "out.png");
+  const loOutPath = path.join(tmpDir, `in.png`);
 
   try {
     fs.writeFileSync(inPath, buf);
-    await inkscapeConvertToPng(inPath, outPath);
-    return fs.readFileSync(outPath);
+
+    // Ưu tiên Inkscape, sau đó ImageMagick, cuối cùng LibreOffice.
+    // Mục tiêu: mọi công thức Equation/MathType dạng WMF/EMF đều được trả về PNG
+    // để trình duyệt hiển thị được, không bị mất trắng như Câu 12.
+    const attempts = [];
+    if (commandExists("inkscape")) {
+      attempts.push(async () => {
+        await inkscapeConvertToPng(inPath, outPath);
+        return outPath;
+      });
+    }
+    if (commandExists("magick") || commandExists("convert")) {
+      attempts.push(async () => {
+        await imageMagickConvertToPng(inPath, outPath);
+        return outPath;
+      });
+    }
+    if (commandExists("soffice") || commandExists("libreoffice")) {
+      attempts.push(async () => {
+        await libreOfficeConvertToPng(inPath, tmpDir);
+        return fs.existsSync(loOutPath) ? loOutPath : outPath;
+      });
+    }
+
+    for (const attempt of attempts) {
+      try {
+        const p = await attempt();
+        if (p && fs.existsSync(p) && fs.statSync(p).size > 0) {
+          return fs.readFileSync(p);
+        }
+      } catch {}
+    }
+
+    return null;
   } finally {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {}
   }
+}
+
+async function storeImageAsBrowserSafeDataUrl(images, key, imgBuf, filename) {
+  const mime = guessMimeFromFilename(filename);
+
+  if (mime === "image/emf" || mime === "image/wmf") {
+    const pngBuf = await maybeConvertEmfWmfToPng(imgBuf, filename);
+    if (pngBuf) {
+      images[key] = `data:image/png;base64,${pngBuf.toString("base64")}`;
+      return true;
+    }
+
+    // Không gán data:image/wmf/emf vì Chrome/Edge thường không hiển thị.
+    // Trả marker rỗng để frontend không hiện biểu tượng ảnh lỗi.
+    images[key] = "";
+    return false;
+  }
+
+  images[key] = `data:${mime};base64,${imgBuf.toString("base64")}`;
+  return true;
 }
 
 /* ================= MathType OLE -> MathML -> LaTeX ================= */
@@ -633,22 +721,7 @@ async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
           const imgFull = normalizeTargetToWordPath(t);
           const imgBuf = await getZipEntryBuffer(zipFiles, imgFull);
           if (imgBuf) {
-            const mime = guessMimeFromFilename(imgFull);
-            if (mime === "image/emf" || mime === "image/wmf") {
-              try {
-                const pngBuf = await maybeConvertEmfWmfToPng(imgBuf, imgFull);
-                if (pngBuf) {
-                  images[`fallback_${key}`] = `data:image/png;base64,${pngBuf.toString(
-                    "base64"
-                  )}`;
-                  latexMap[key] = "";
-                  return;
-                }
-              } catch {}
-            }
-            images[`fallback_${key}`] = `data:${mime};base64,${imgBuf.toString(
-              "base64"
-            )}`;
+            await storeImageAsBrowserSafeDataUrl(images, `fallback_${key}`, imgBuf, imgFull);
           }
         }
       }
@@ -677,17 +750,7 @@ async function tokenizeImagesAfter(docXml, rels, zipFiles) {
         const buf = await getZipEntryBuffer(zipFiles, full);
         if (!buf) return;
 
-        const mime = guessMimeFromFilename(full);
-        if (mime === "image/emf" || mime === "image/wmf") {
-          try {
-            const pngBuf = await maybeConvertEmfWmfToPng(buf, full);
-            if (pngBuf) {
-              imgMap[key] = `data:image/png;base64,${pngBuf.toString("base64")}`;
-              return;
-            }
-          } catch {}
-        }
-        imgMap[key] = `data:${mime};base64,${buf.toString("base64")}`;
+        await storeImageAsBrowserSafeDataUrl(imgMap, key, buf, full);
       })()
     );
   };
