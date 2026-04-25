@@ -663,6 +663,174 @@ async function tokenizeMathTypeOleFirst(docXml, rels, zipFiles, images) {
   return { outXml: docXml, latexMap };
 }
 
+/* ================= Word Equation OMML -> LaTeX (ADD-ON ONLY, KHÔNG ĐỤNG MathType CŨ) ================= */
+
+function ommlUnescape(s = "") {
+  return decodeXmlEntities(String(s || ""))
+    .replace(/−/g, "-")
+    .replace(/×/g, "\\times ")
+    .replace(/÷/g, "\\div ")
+    .replace(/≤/g, "\\le ")
+    .replace(/≥/g, "\\ge ")
+    .replace(/≠/g, "\\ne ")
+    .replace(/≈/g, "\\approx ")
+    .replace(/≡/g, "\\equiv ")
+    .replace(/∈/g, "\\in ")
+    .replace(/∉/g, "\\notin ")
+    .replace(/∞/g, "\\infty ")
+    .replace(/π/g, "\\pi ")
+    .replace(/α/g, "\\alpha ")
+    .replace(/β/g, "\\beta ")
+    .replace(/γ/g, "\\gamma ")
+    .replace(/δ/g, "\\delta ")
+    .replace(/Δ/g, "\\Delta ")
+    .replace(/θ/g, "\\theta ")
+    .replace(/λ/g, "\\lambda ")
+    .replace(/μ/g, "\\mu ")
+    .replace(/√/g, "\\sqrt{}")
+    .trim();
+}
+
+function ommlLocalName(name = "") { return String(name || "").split(":").pop(); }
+function ommlParseAttrs(attr = "") {
+  const out = {};
+  String(attr || "").replace(/([\w:.-]+)\s*=\s*"([^"]*)"/g, (_, k, v) => {
+    out[ommlLocalName(k)] = decodeXmlEntities(v);
+    return "";
+  });
+  return out;
+}
+function ommlParseXml(xml = "") {
+  const root = { name: "root", attrs: {}, children: [] };
+  const stack = [root];
+  const re = /<\/?[\w:.-]+\b[^>]*>|[^<]+/g;
+  let m;
+  while ((m = re.exec(String(xml || "")))) {
+    const tok = m[0];
+    const parent = stack[stack.length - 1];
+    if (!tok.startsWith("<")) {
+      const txt = decodeXmlEntities(tok);
+      if (txt) parent.children.push({ text: txt });
+      continue;
+    }
+    if (/^<\//.test(tok)) { if (stack.length > 1) stack.pop(); continue; }
+    const mm = tok.match(/^<([\w:.-]+)\b([^>]*?)(\/?)>$/);
+    if (!mm) continue;
+    const node = { name: ommlLocalName(mm[1]), attrs: ommlParseAttrs(mm[2]), children: [] };
+    parent.children.push(node);
+    if (!mm[3] && !/\/>$/.test(tok)) stack.push(node);
+  }
+  return root;
+}
+function ommlChildren(node, name) { return (node?.children || []).filter((c) => c && !c.text && (!name || c.name === name)); }
+function ommlFirst(node, name) { return ommlChildren(node, name)[0] || null; }
+function ommlVal(node, def = "") { return node?.attrs?.val ?? def; }
+function ommlTex(node) {
+  if (!node) return "";
+  if (node.text != null) return ommlUnescape(node.text);
+  const name = node.name;
+  const kids = node.children || [];
+  const join = (arr = kids) => arr.map(ommlTex).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  const texOf = (childName) => ommlTex(ommlFirst(node, childName));
+  const e = () => texOf("e");
+
+  if (["root", "oMath", "oMathPara", "r", "mr", "mc", "mPr", "ctrlPr", "rPr"].includes(name)) return join();
+  if (["t", "delim", "sepChr", "begChr", "endChr", "chr", "pos", "vertJc"].includes(name)) return ommlUnescape(ommlVal(node, join()));
+
+  if (name === "f") return `\\frac{${texOf("num")}}{${texOf("den")}}`;
+  if (name === "num" || name === "den") return join();
+  if (name === "rad") {
+    const deg = texOf("deg"); const body = e();
+    return deg ? `\\sqrt[${deg}]{${body}}` : `\\sqrt{${body}}`;
+  }
+  if (name === "deg") return join();
+  if (name === "sSup") return `{${e()}}^{${texOf("sup")}}`;
+  if (name === "sSub") return `{${e()}}_{${texOf("sub")}}`;
+  if (name === "sSubSup") return `{${e()}}_{${texOf("sub")}}^{${texOf("sup")}}`;
+  if (["sup", "sub"].includes(name)) return join();
+
+  if (name === "nary") {
+    let chr = ommlVal(ommlFirst(ommlFirst(node, "naryPr"), "chr"), "∑");
+    const map = { "∑": "\\sum", "∏": "\\prod", "∫": "\\int", "∬": "\\iint", "∭": "\\iiint", "∮": "\\oint", "⋂": "\\bigcap", "⋃": "\\bigcup" };
+    chr = map[chr] || chr;
+    const sub = texOf("sub"), sup = texOf("sup"), body = e();
+    return `${chr}${sub ? `_{${sub}}` : ""}${sup ? `^{${sup}}` : ""}${body ? ` ${body}` : ""}`.trim();
+  }
+  if (name === "limLow") {
+    const base = e(); const lim = texOf("lim");
+    if (/^lim$/i.test(base.replace(/\\/g, ""))) return `\\lim_{${lim}}`;
+    return `{${base}}_{${lim}}`;
+  }
+  if (name === "limUpp") return `{${e()}}^{${texOf("lim")}}`;
+  if (name === "lim") return join();
+  if (name === "func") {
+    const fn = texOf("fName").replace(/\s+/g, ""); const body = e();
+    const known = { sin:"\\sin", cos:"\\cos", tan:"\\tan", cot:"\\cot", log:"\\log", ln:"\\ln", lim:"\\lim" };
+    return `${known[fn] || fn}${body ? ` ${body}` : ""}`.trim();
+  }
+  if (name === "fName") return join();
+  if (name === "eqArr") {
+    const rows = ommlChildren(node, "e").map(ommlTex).filter(Boolean);
+    return `\\begin{aligned}${rows.join("\\\\")}\\end{aligned}`;
+  }
+  if (name === "m") {
+    const rows = ommlChildren(node, "mr").map((r) => {
+      const cols = ommlChildren(r, "e").map(ommlTex);
+      return cols.join(" & ");
+    }).filter(Boolean);
+    return `\\begin{matrix}${rows.join("\\\\")}\\end{matrix}`;
+  }
+  if (name === "d") {
+    const pr = ommlFirst(node, "dPr");
+    let beg = ommlVal(ommlFirst(pr, "begChr"), "(");
+    let end = ommlVal(ommlFirst(pr, "endChr"), ")");
+    if (end === "") end = ".";
+    const body = e();
+    const hasEqArr = /\\begin\{aligned\}/.test(body);
+    const hasMatrix = /\\begin\{matrix\}/.test(body);
+    if (beg === "{" && (hasEqArr || hasMatrix) && (end === "." || end === "")) return `\\left\\{${body}\\right.`;
+    const esc = (ch) => ch === "{" ? "\\{" : ch === "}" ? "\\}" : ch;
+    return `\\left${esc(beg)}${body}\\right${esc(end)}`;
+  }
+  if (name === "bar") {
+    const pos = ommlVal(ommlFirst(ommlFirst(node, "barPr"), "pos"), "top");
+    return pos === "bot" ? `\\underline{${e()}}` : `\\overline{${e()}}`;
+  }
+  if (name === "acc") {
+    const chr = ommlVal(ommlFirst(ommlFirst(node, "accPr"), "chr"), "^");
+    const map = { "^": "hat", "~": "tilde", "→": "vec", "¯": "bar", ".": "dot", "¨": "ddot" };
+    return `\\${map[chr] || "hat"}{${e()}}`;
+  }
+  if (name === "groupChr") {
+    const chr = ommlVal(ommlFirst(ommlFirst(node, "groupChrPr"), "chr"), "⏞");
+    return `\\${chr === "⏟" ? "underbrace" : "overbrace"}{${e()}}`;
+  }
+  if (name === "box") return e();
+  if (name === "phant") return `\\phantom{${e()}}`;
+  return join();
+}
+function ommlToLatex(ommlXml = "") {
+  try {
+    return ommlTex(ommlParseXml(ommlXml))
+      .replace(/\s*([=+\-<>])\s*/g, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
+  } catch { return ""; }
+}
+function tokenizeWordEquationOmml(docXml) {
+  let idx = 0;
+  const latexMap = {};
+  let outXml = String(docXml || "");
+  outXml = outXml.replace(/<m:oMath\b[\s\S]*?<\/m:oMath>/g, (block) => {
+    const latex = ommlToLatex(block);
+    if (!latex) return block;
+    const key = `equation_${++idx}`;
+    latexMap[key] = latex;
+    return `[!m:${key}$]`;
+  });
+  return { outXml, latexMap };
+}
+
 /* ================= Images AFTER MathType ================= */
 
 async function tokenizeImagesAfter(docXml, rels, zipFiles) {
@@ -1246,7 +1414,7 @@ async function tokenizeImagesAfterFast(docXml, rels, zipMap) {
   await Promise.all(jobs); return { outXml: docXml, imgMap };
 }
 
-async function buildFastUploadPayload(fileBuffer, opts={}){const fileHash=sha1Buffer(fileBuffer); const initialLimit=Number(opts.initialLimit??8); const cacheKey=`${fileHash}:fast:${initialLimit}`; const cached=UPLOAD_RESPONSE_CACHE.get(cacheKey); if(cached)return {...cached.payload,cached:true}; const zip=await unzipper.Open.buffer(fileBuffer); const zipMap=makeZipMap(zip); const docEntry=zipMap.get("word/document.xml"), relEntry=zipMap.get("word/_rels/document.xml.rels"); if(!docEntry||!relEntry)throw new Error("Missing document.xml or document.xml.rels"); let docXml=(await docEntry.buffer()).toString("utf8"); const rels=parseRels((await relEntry.buffer()).toString("utf8")); const images={}; const mt=await tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit); docXml=mt.outXml; const latexMap=mt.latexMap; const imgTok=await tokenizeImagesAfterFast(docXml, rels, zipMap); docXml=imgTok.outXml; Object.assign(images,imgTok.imgMap); const text=wordXmlToTextKeepTokens(docXml); const exam=parseExamFromText(text); const sections=extractSectionTitles(text); exam.sections=sections; attachSectionOrderToQuestions(exam,sections); const blocks=buildOrderedBlocks(exam); LAZY_UPLOAD_CACHE.set(fileHash,{t:Date.now(),zipMap,rels,found:mt.found}); const payload=stripHeavyPayloadForFastResponse({ok:true,mode:"azota_ultra_lazy",uploadId:fileHash,total:exam.questions.length,sections,blocks,rawText:text,latex:latexMap,images,missingLatexKeys:Object.keys(mt.found).filter(k=>!latexMap[k]),debug:{lazy:true,initialLatex:Object.keys(latexMap).length,mathTypeTotal:Object.keys(mt.found).length,imagesCount:Object.keys(images).length,exam:{questions:exam.questions.length,mcq:exam.questions.filter(x=>x.type==="mcq").length,tf4:exam.questions.filter(x=>x.type==="tf4").length,short:exam.questions.filter(x=>x.type==="short").length}}}); UPLOAD_RESPONSE_CACHE.set(cacheKey,{t:Date.now(),payload}); return payload;}
+async function buildFastUploadPayload(fileBuffer, opts={}){const fileHash=sha1Buffer(fileBuffer); const initialLimit=Number(opts.initialLimit??8); const cacheKey=`${fileHash}:fast:${initialLimit}`; const cached=UPLOAD_RESPONSE_CACHE.get(cacheKey); if(cached)return {...cached.payload,cached:true}; const zip=await unzipper.Open.buffer(fileBuffer); const zipMap=makeZipMap(zip); const docEntry=zipMap.get("word/document.xml"), relEntry=zipMap.get("word/_rels/document.xml.rels"); if(!docEntry||!relEntry)throw new Error("Missing document.xml or document.xml.rels"); let docXml=(await docEntry.buffer()).toString("utf8"); const rels=parseRels((await relEntry.buffer()).toString("utf8")); const images={}; const mt=await tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit); docXml=mt.outXml; const latexMap=mt.latexMap; const omml=tokenizeWordEquationOmml(docXml); docXml=omml.outXml; Object.assign(latexMap,omml.latexMap); const imgTok=await tokenizeImagesAfterFast(docXml, rels, zipMap); docXml=imgTok.outXml; Object.assign(images,imgTok.imgMap); const text=wordXmlToTextKeepTokens(docXml); const exam=parseExamFromText(text); const sections=extractSectionTitles(text); exam.sections=sections; attachSectionOrderToQuestions(exam,sections); const blocks=buildOrderedBlocks(exam); LAZY_UPLOAD_CACHE.set(fileHash,{t:Date.now(),zipMap,rels,found:mt.found}); const payload=stripHeavyPayloadForFastResponse({ok:true,mode:"azota_ultra_lazy",uploadId:fileHash,total:exam.questions.length,sections,blocks,rawText:text,latex:latexMap,images,missingLatexKeys:Object.keys(mt.found).filter(k=>!latexMap[k]),debug:{lazy:true,initialLatex:Object.keys(latexMap).length,mathTypeTotal:Object.keys(mt.found).length,imagesCount:Object.keys(images).length,exam:{questions:exam.questions.length,mcq:exam.questions.filter(x=>x.type==="mcq").length,tf4:exam.questions.filter(x=>x.type==="tf4").length,short:exam.questions.filter(x=>x.type==="short").length}}}); UPLOAD_RESPONSE_CACHE.set(cacheKey,{t:Date.now(),payload}); return payload;}
 app.post("/latex-batch", express.json({limit:"2mb"}), async (req,res)=>{try{const {uploadId,keys}=req.body||{}; const job=LAZY_UPLOAD_CACHE.get(uploadId); if(!job)return res.status(404).json({ok:false,error:"Upload cache expired. Please upload again."}); const out={}; const list=Array.isArray(keys)?keys.slice(0,30):[]; await Promise.all(list.map(async key=>{const info=job.found?.[key]; if(info)out[key]=await convertOneOleToLatexCached(job.zipMap,info.oleTarget);})); job.t=Date.now(); res.json({ok:true,latex:out});}catch(err){res.status(500).json({ok:false,error:err.message||String(err)});}});
 
 /* ================= API ================= */
@@ -1274,6 +1442,11 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     const mt = await tokenizeMathTypeOleFirst(docXml, rels, zipMap, images);
     docXml = mt.outXml;
     const latexMap = mt.latexMap;
+
+    // 1.5) Word Equation OMML -> LaTeX (add-on, không đụng MathType cũ)
+    const omml = tokenizeWordEquationOmml(docXml);
+    docXml = omml.outXml;
+    Object.assign(latexMap, omml.latexMap);
 
     // 2) normal images
     const imgTok = await tokenizeImagesAfter(docXml, rels, zipMap);
