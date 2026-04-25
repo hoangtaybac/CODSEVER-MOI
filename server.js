@@ -1,5 +1,4 @@
-// server_AZOTA_ENGINE_PRO.js
-// ✅ AZOTA ENGINE PRO: upload nhanh + đếm công thức + xử lý LaTeX theo queue/batch nền
+// server.js
 // ✅ FULL CODE (FIX: tiêu đề PHẦN đúng vị trí như file Word gốc + GIỮ BẢNG trong Word)
 // - Không lệch khi mỗi PHẦN reset "Câu 1."
 // - Server trả thêm `blocks` đã trộn (section + question) đúng thứ tự để frontend render chuẩn.
@@ -1230,64 +1229,14 @@ function buildOrderedBlocks(exam) {
 
 
 /* ================= ULTRA SPEED CACHE + LAZY MATHTYPE ================= */
-const UPLOAD_RESPONSE_CACHE = new Map(), OLE_LATEX_CACHE = new Map(), LAZY_UPLOAD_CACHE = new Map(), PREVIEW_IMAGE_CACHE = new Map();
+const UPLOAD_RESPONSE_CACHE = new Map(), OLE_LATEX_CACHE = new Map(), LAZY_UPLOAD_CACHE = new Map();
 const CACHE_TTL_MS = 30 * 60 * 1000;
 function sha1Buffer(buf){return crypto.createHash("sha1").update(buf).digest("hex");}
 function makeZipMap(zip){const m=new Map(); for(const f of zip.files)m.set(f.path,f); return m;}
 function trimCaches(){const now=Date.now(); for(const [k,v] of UPLOAD_RESPONSE_CACHE) if(now-v.t>CACHE_TTL_MS) UPLOAD_RESPONSE_CACHE.delete(k); for(const [k,v] of LAZY_UPLOAD_CACHE) if(now-v.t>CACHE_TTL_MS) LAZY_UPLOAD_CACHE.delete(k);}
 function stripHeavyPayloadForFastResponse(payload){const out={...payload}; delete out.exam; delete out.questions; return out;}
 async function convertOneOleToLatexCached(zipMap, oleTarget){const oleFull=normalizeTargetToWordPath(oleTarget); const oleBuf=await getZipEntryBuffer(zipMap, oleFull); if(!oleBuf)return ""; const h=sha1Buffer(oleBuf); if(OLE_LATEX_CACHE.has(h))return OLE_LATEX_CACHE.get(h); let mml=extractMathMLFromOleScan(oleBuf)||""; if(!mml){try{mml=await rubyOleToMathML(oleBuf);}catch{mml="";}} if(mml)mml=normalizeMathMLForConvert(mml); const latex=mml?mathmlToLatexSafe(mml):""; OLE_LATEX_CACHE.set(h, latex||""); return latex||"";}
-async function convertPreviewImageToDataUrlCached(zipMap, imgTarget){
-  if(!imgTarget) return "";
-  const full=normalizeTargetToWordPath(imgTarget);
-  const buf=await getZipEntryBuffer(zipMap, full);
-  if(!buf) return "";
-  const h=sha1Buffer(buf);
-  if(PREVIEW_IMAGE_CACHE.has(h)) return PREVIEW_IMAGE_CACHE.get(h);
-  const mime=guessMimeFromFilename(full);
-  let data="";
-  if(mime === "image/emf" || mime === "image/wmf") {
-    try {
-      const pngBuf = await maybeConvertEmfWmfToPng(buf, full);
-      if (pngBuf) data = `data:image/png;base64,${pngBuf.toString("base64")}`;
-    } catch(e) { data = ""; }
-  } else {
-    data = `data:${mime};base64,${buf.toString("base64")}`;
-  }
-  PREVIEW_IMAGE_CACHE.set(h, data || "");
-  return data || "";
-}
-
-async function tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit=0, images={}){
-  let idx=0; const found={}; const previewJobs=[]; const OBJECT_RE=/<w:object[\s\S]*?<\/w:object>/g;
-  // REAL PREVIEW ENGINE: trả ảnh preview PNG/JPG ngay, WMF/EMF convert theo lô qua /preview-batch.
-  const schedulePreview=(rid,key)=>{ 
-    if(!rid) return; 
-    const target=rels.get(rid); 
-    if(!target) return; 
-    found[key].previewTarget = target;
-    const full=normalizeTargetToWordPath(target); 
-    const mime=guessMimeFromFilename(full);
-    if(mime==='image/emf'||mime==='image/wmf') return;
-    previewJobs.push((async()=>{ 
-      const dataUrl = await convertPreviewImageToDataUrlCached(zipMap, target);
-      if(dataUrl) images[`fallback_${key}`]=dataUrl; 
-    })()); 
-  };
-  docXml=docXml.replace(OBJECT_RE,(block)=>{
-    const ole=block.match(/<o:OLEObject\b[^>]*\br:id="([^"]+)"/); if(!ole)return block;
-    const oleTarget=rels.get(ole[1]); if(!oleTarget)return block;
-    const vmlRid=block.match(/<v:imagedata\b[^>]*\br:id="([^"]+)"[^>]*\/?>/)?.[1];
-    const blipRid=block.match(/<a:blip\b[^>]*\br:(?:embed|link)="([^"]+)"[^>]*\/?>/)?.[1];
-    const key=`mathtype_${++idx}`; found[key]={oleTarget, previewRid:vmlRid||blipRid||null, previewTarget:null};
-    schedulePreview(found[key].previewRid,key);
-    return `[!m:$${key}$]`;
-  });
-  await Promise.all(previewJobs);
-  const latexMap={}; const keys=Object.keys(found).slice(0,Math.max(0,Number(initialLimit||0)));
-  await Promise.all(keys.map(async key=>{latexMap[key]=await convertOneOleToLatexCached(zipMap, found[key].oleTarget);}));
-  return {outXml:docXml, latexMap, found};
-}
+async function tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit=8){let idx=0; const found={}; const OBJECT_RE=/<w:object[\s\S]*?<\/w:object>/g; docXml=docXml.replace(OBJECT_RE,(block)=>{const ole=block.match(/<o:OLEObject\b[^>]*\br:id="([^"]+)"/); if(!ole)return block; const oleTarget=rels.get(ole[1]); if(!oleTarget)return block; const key=`mathtype_${++idx}`; found[key]={oleTarget}; return `[!m:$${key}$]`;}); const latexMap={}; const keys=Object.keys(found).slice(0,Math.max(0,Number(initialLimit||0))); await Promise.all(keys.map(async key=>{latexMap[key]=await convertOneOleToLatexCached(zipMap, found[key].oleTarget);})); return {outXml:docXml, latexMap, found};}
 
 async function tokenizeImagesAfterFast(docXml, rels, zipMap) {
   let idx = 0; const imgMap = {}; const jobs = [];
@@ -1297,8 +1246,8 @@ async function tokenizeImagesAfterFast(docXml, rels, zipMap) {
   await Promise.all(jobs); return { outXml: docXml, imgMap };
 }
 
-async function buildFastUploadPayload(fileBuffer, opts={}){const fileHash=sha1Buffer(fileBuffer); const initialLimit=Number(opts.initialLimit??0); const cacheKey=`${fileHash}:fast:${initialLimit}`; const cached=UPLOAD_RESPONSE_CACHE.get(cacheKey); if(cached)return {...cached.payload,cached:true}; const zip=await unzipper.Open.buffer(fileBuffer); const zipMap=makeZipMap(zip); const docEntry=zipMap.get("word/document.xml"), relEntry=zipMap.get("word/_rels/document.xml.rels"); if(!docEntry||!relEntry)throw new Error("Missing document.xml or document.xml.rels"); let docXml=(await docEntry.buffer()).toString("utf8"); const rels=parseRels((await relEntry.buffer()).toString("utf8")); const images={}; const mt=await tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit, images); docXml=mt.outXml; const latexMap=mt.latexMap; const imgTok=await tokenizeImagesAfterFast(docXml, rels, zipMap); docXml=imgTok.outXml; Object.assign(images,imgTok.imgMap); const text=wordXmlToTextKeepTokens(docXml); const exam=parseExamFromText(text); const sections=extractSectionTitles(text); exam.sections=sections; attachSectionOrderToQuestions(exam,sections); const blocks=buildOrderedBlocks(exam); LAZY_UPLOAD_CACHE.set(fileHash,{t:Date.now(),zipMap,rels,found:mt.found}); const payload=stripHeavyPayloadForFastResponse({ok:true,mode:"azota_engine_pro_queue",uploadId:fileHash,total:exam.questions.length,sections,blocks,rawText:text,latex:latexMap,images,missingLatexKeys:Object.keys(mt.found).filter(k=>!latexMap[k]),debug:{lazy:true,initialLatex:Object.keys(latexMap).length,mathTypeTotal:Object.keys(mt.found).length,imagesCount:Object.keys(images).length,exam:{questions:exam.questions.length,mcq:exam.questions.filter(x=>x.type==="mcq").length,tf4:exam.questions.filter(x=>x.type==="tf4").length,short:exam.questions.filter(x=>x.type==="short").length}}}); UPLOAD_RESPONSE_CACHE.set(cacheKey,{t:Date.now(),payload}); return payload;}
-app.post("/latex-batch", express.json({limit:"2mb"}), async (req,res)=>{try{const {uploadId,keys}=req.body||{}; const job=LAZY_UPLOAD_CACHE.get(uploadId); if(!job)return res.status(404).json({ok:false,error:"Upload cache expired. Please upload again."}); const out={}; const list=Array.isArray(keys)?keys.slice(0,3):[]; for (const key of list){const info=job.found?.[key]; if(info)out[key]=await convertOneOleToLatexCached(job.zipMap,info.oleTarget);} job.t=Date.now(); res.json({ok:true,latex:out});}catch(err){res.status(500).json({ok:false,error:err.message||String(err)});}});
+async function buildFastUploadPayload(fileBuffer, opts={}){const fileHash=sha1Buffer(fileBuffer); const initialLimit=Number(opts.initialLimit??8); const cacheKey=`${fileHash}:fast:${initialLimit}`; const cached=UPLOAD_RESPONSE_CACHE.get(cacheKey); if(cached)return {...cached.payload,cached:true}; const zip=await unzipper.Open.buffer(fileBuffer); const zipMap=makeZipMap(zip); const docEntry=zipMap.get("word/document.xml"), relEntry=zipMap.get("word/_rels/document.xml.rels"); if(!docEntry||!relEntry)throw new Error("Missing document.xml or document.xml.rels"); let docXml=(await docEntry.buffer()).toString("utf8"); const rels=parseRels((await relEntry.buffer()).toString("utf8")); const images={}; const mt=await tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit); docXml=mt.outXml; const latexMap=mt.latexMap; const imgTok=await tokenizeImagesAfterFast(docXml, rels, zipMap); docXml=imgTok.outXml; Object.assign(images,imgTok.imgMap); const text=wordXmlToTextKeepTokens(docXml); const exam=parseExamFromText(text); const sections=extractSectionTitles(text); exam.sections=sections; attachSectionOrderToQuestions(exam,sections); const blocks=buildOrderedBlocks(exam); LAZY_UPLOAD_CACHE.set(fileHash,{t:Date.now(),zipMap,rels,found:mt.found}); const payload=stripHeavyPayloadForFastResponse({ok:true,mode:"azota_ultra_lazy",uploadId:fileHash,total:exam.questions.length,sections,blocks,rawText:text,latex:latexMap,images,missingLatexKeys:Object.keys(mt.found).filter(k=>!latexMap[k]),debug:{lazy:true,initialLatex:Object.keys(latexMap).length,mathTypeTotal:Object.keys(mt.found).length,imagesCount:Object.keys(images).length,exam:{questions:exam.questions.length,mcq:exam.questions.filter(x=>x.type==="mcq").length,tf4:exam.questions.filter(x=>x.type==="tf4").length,short:exam.questions.filter(x=>x.type==="short").length}}}); UPLOAD_RESPONSE_CACHE.set(cacheKey,{t:Date.now(),payload}); return payload;}
+app.post("/latex-batch", express.json({limit:"2mb"}), async (req,res)=>{try{const {uploadId,keys}=req.body||{}; const job=LAZY_UPLOAD_CACHE.get(uploadId); if(!job)return res.status(404).json({ok:false,error:"Upload cache expired. Please upload again."}); const out={}; const list=Array.isArray(keys)?keys.slice(0,30):[]; await Promise.all(list.map(async key=>{const info=job.found?.[key]; if(info)out[key]=await convertOneOleToLatexCached(job.zipMap,info.oleTarget);})); job.t=Date.now(); res.json({ok:true,latex:out});}catch(err){res.status(500).json({ok:false,error:err.message||String(err)});}});
 
 /* ================= API ================= */
 
@@ -1306,7 +1255,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
   try {
     if (!req.file?.buffer) throw new Error("No file uploaded");
     trimCaches();
-    if (req.query.full !== "1") return res.json(await buildFastUploadPayload(req.file.buffer, { initialLimit: req.query.initialLatex ?? 0 }));
+    if (req.query.full !== "1") return res.json(await buildFastUploadPayload(req.file.buffer, { initialLimit: req.query.initialLatex ?? 8 }));
 
     const zip = await unzipper.Open.buffer(req.file.buffer);
     const zipMap = makeZipMap(zip);
