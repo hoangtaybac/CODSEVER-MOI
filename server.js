@@ -1230,22 +1230,56 @@ function buildOrderedBlocks(exam) {
 
 
 /* ================= ULTRA SPEED CACHE + LAZY MATHTYPE ================= */
-const UPLOAD_RESPONSE_CACHE = new Map(), OLE_LATEX_CACHE = new Map(), LAZY_UPLOAD_CACHE = new Map();
+const UPLOAD_RESPONSE_CACHE = new Map(), OLE_LATEX_CACHE = new Map(), LAZY_UPLOAD_CACHE = new Map(), PREVIEW_IMAGE_CACHE = new Map();
 const CACHE_TTL_MS = 30 * 60 * 1000;
 function sha1Buffer(buf){return crypto.createHash("sha1").update(buf).digest("hex");}
 function makeZipMap(zip){const m=new Map(); for(const f of zip.files)m.set(f.path,f); return m;}
 function trimCaches(){const now=Date.now(); for(const [k,v] of UPLOAD_RESPONSE_CACHE) if(now-v.t>CACHE_TTL_MS) UPLOAD_RESPONSE_CACHE.delete(k); for(const [k,v] of LAZY_UPLOAD_CACHE) if(now-v.t>CACHE_TTL_MS) LAZY_UPLOAD_CACHE.delete(k);}
 function stripHeavyPayloadForFastResponse(payload){const out={...payload}; delete out.exam; delete out.questions; return out;}
 async function convertOneOleToLatexCached(zipMap, oleTarget){const oleFull=normalizeTargetToWordPath(oleTarget); const oleBuf=await getZipEntryBuffer(zipMap, oleFull); if(!oleBuf)return ""; const h=sha1Buffer(oleBuf); if(OLE_LATEX_CACHE.has(h))return OLE_LATEX_CACHE.get(h); let mml=extractMathMLFromOleScan(oleBuf)||""; if(!mml){try{mml=await rubyOleToMathML(oleBuf);}catch{mml="";}} if(mml)mml=normalizeMathMLForConvert(mml); const latex=mml?mathmlToLatexSafe(mml):""; OLE_LATEX_CACHE.set(h, latex||""); return latex||"";}
+async function convertPreviewImageToDataUrlCached(zipMap, imgTarget){
+  if(!imgTarget) return "";
+  const full=normalizeTargetToWordPath(imgTarget);
+  const buf=await getZipEntryBuffer(zipMap, full);
+  if(!buf) return "";
+  const h=sha1Buffer(buf);
+  if(PREVIEW_IMAGE_CACHE.has(h)) return PREVIEW_IMAGE_CACHE.get(h);
+  const mime=guessMimeFromFilename(full);
+  let data="";
+  if(mime === "image/emf" || mime === "image/wmf") {
+    try {
+      const pngBuf = await maybeConvertEmfWmfToPng(buf, full);
+      if (pngBuf) data = `data:image/png;base64,${pngBuf.toString("base64")}`;
+    } catch(e) { data = ""; }
+  } else {
+    data = `data:${mime};base64,${buf.toString("base64")}`;
+  }
+  PREVIEW_IMAGE_CACHE.set(h, data || "");
+  return data || "";
+}
+
 async function tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit=0, images={}){
   let idx=0; const found={}; const previewJobs=[]; const OBJECT_RE=/<w:object[\s\S]*?<\/w:object>/g;
-  const schedulePreview=(rid,key)=>{ if(!rid) return; const target=rels.get(rid); if(!target) return; const full=normalizeTargetToWordPath(target); previewJobs.push((async()=>{ const buf=await getZipEntryBuffer(zipMap, full); if(!buf) return; const mime=guessMimeFromFilename(full); if(mime==='image/emf'||mime==='image/wmf') return; images[`fallback_${key}`]=`data:${mime};base64,${buf.toString('base64')}`; })()); };
+  // REAL PREVIEW ENGINE: trả ảnh preview PNG/JPG ngay, WMF/EMF convert theo lô qua /preview-batch.
+  const schedulePreview=(rid,key)=>{ 
+    if(!rid) return; 
+    const target=rels.get(rid); 
+    if(!target) return; 
+    found[key].previewTarget = target;
+    const full=normalizeTargetToWordPath(target); 
+    const mime=guessMimeFromFilename(full);
+    if(mime==='image/emf'||mime==='image/wmf') return;
+    previewJobs.push((async()=>{ 
+      const dataUrl = await convertPreviewImageToDataUrlCached(zipMap, target);
+      if(dataUrl) images[`fallback_${key}`]=dataUrl; 
+    })()); 
+  };
   docXml=docXml.replace(OBJECT_RE,(block)=>{
     const ole=block.match(/<o:OLEObject\b[^>]*\br:id="([^"]+)"/); if(!ole)return block;
     const oleTarget=rels.get(ole[1]); if(!oleTarget)return block;
     const vmlRid=block.match(/<v:imagedata\b[^>]*\br:id="([^"]+)"[^>]*\/?>/)?.[1];
     const blipRid=block.match(/<a:blip\b[^>]*\br:(?:embed|link)="([^"]+)"[^>]*\/?>/)?.[1];
-    const key=`mathtype_${++idx}`; found[key]={oleTarget, previewRid:vmlRid||blipRid||null};
+    const key=`mathtype_${++idx}`; found[key]={oleTarget, previewRid:vmlRid||blipRid||null, previewTarget:null};
     schedulePreview(found[key].previewRid,key);
     return `[!m:$${key}$]`;
   });
