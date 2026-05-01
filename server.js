@@ -500,6 +500,36 @@ function fixSqrtLatex(latex, mathmlMaybe = "") {
   return s;
 }
 
+function fixDegreeLatexOnly(latex) {
+  let s = String(latex || "");
+
+  // CHỈ sửa ký hiệu độ bị Word/MathType nhận thành chữ o/º/⁰ sau số.
+  // Không thay số 10, 20, 30... vì các số này không có chữ o/º/⁰ hoặc mũ LaTeX đi kèm.
+  s = s
+    // 135^{o}, 90^o, 60^{0}, 45^0 -> 135^\circ...
+    .replace(/(\d{1,3})\s*\^\s*\{\s*(?:o|O|0|º|°|⁰|\\mathrm\s*\{\s*o\s*\}|\\text\s*\{\s*o\s*\})\s*\}/g, "$1^\\circ")
+    .replace(/(\d{1,3})\s*\^\s*(?:o|O|0|º|°|⁰)\b/g, "$1^\\circ")
+
+    // 135 o, 90o, 60º, 60° , 60⁰ -> 135^\circ...
+    .replace(/(\d{1,3})\s*(?:º|°|⁰)/g, "$1^\\circ")
+    .replace(/(\d{1,3})\s+([oO])\b/g, "$1^\\circ")
+    .replace(/(\d{1,3})([oO])\b/g, "$1^\\circ");
+
+  return s;
+}
+
+function fixDegreeTextOnly(text) {
+  let s = String(text || "");
+
+  // CHỈ sửa độ dạng chữ o/º/⁰ sau số. Không sửa số 10, 20, 30...
+  s = s
+    .replace(/(\d{1,3})\s*(?:º|°|⁰)/g, "$1°")
+    .replace(/(\d{1,3})\s+([oO])\b/g, "$1°")
+    .replace(/(\d{1,3})([oO])\b/g, "$1°");
+
+  return s;
+}
+
 function postProcessLatex(latex, mathmlMaybe = "") {
   let s = latex || "";
   s = sanitizeLatexStrict(s);
@@ -507,6 +537,7 @@ function postProcessLatex(latex, mathmlMaybe = "") {
   s = restoreArrowAndCoreCommands(s);
   s = fixPiecewiseFunction(s);
   s = fixSqrtLatex(s, mathmlMaybe);
+  s = fixDegreeLatexOnly(s);
   return String(s || "")
     .replace(/[ \t]+/g, " ")
     .replace(/\s*\\\\\s*/g, " \\\\ ")
@@ -950,44 +981,6 @@ function wordTableXmlToHtmlTable(tblXml) {
   return html;
 }
 
-// FIX_ONLY_DEGREE_SYMBOL: chuan hoa ky hieu do, khong doi thuat toan khac
-function normalizeDegreeSymbolsText(s) {
-  // Chỉ đổi ký hiệu độ thật/sai OCR sau một số: 135o, 135º, 135˚, 135°, 135⁰.
-  // TUYỆT ĐỐI không đổi chữ số 0 thường, để không làm hỏng 10, 20, 30, 40...
-  return String(s || "")
-    .replace(/&deg;/gi, "°")
-    .replace(/(\d+)\s*(?:[oº˚°⁰])(?=\s|[.,;:!?\)\]\}<]|$)/gi, "$1°");
-}
-
-function normalizeDegreePlainFields(obj) {
-  if (obj == null) return obj;
-  if (typeof obj === "string") return normalizeDegreeSymbolsText(obj);
-  if (Array.isArray(obj)) {
-    for (let i = 0; i < obj.length; i++) obj[i] = normalizeDegreePlainFields(obj[i]);
-    return obj;
-  }
-  if (typeof obj === "object") {
-    for (const k of Object.keys(obj)) obj[k] = normalizeDegreePlainFields(obj[k]);
-    return obj;
-  }
-  return obj;
-}
-function normalizeDegreeLatex(s) {
-  // Chuẩn hoá riêng LaTeX/MathType: chỉ đổi các dạng độ có dấu mũ hoặc chữ o/º/°/⁰ sau số.
-  // Không đổi số 0 thường đứng cuối số, tránh lỗi 10 -> 1°, 90 -> 9°.
-  return String(s || "")
-    .replace(/(\d+)\s*\^\s*\{\s*(?:0|o|º|˚|°|⁰|\\circ)\s*\}/gi, "$1^\\circ")
-    .replace(/(\d+)\s*\^\s*(?:0|o|º|˚|°|⁰)/gi, "$1^\\circ")
-    .replace(/(\d+)\s*(?:\\operatorname\s*\{\s*[o0]\s*\}|\\mathrm\s*\{\s*[o0]\s*\}|\\text\s*\{\s*[o0]\s*\})(?=\s|[.,;:!?\)\]\}<]|$)/gi, "$1^\\circ")
-    .replace(/(\d+)\s*(?:o|º|˚|°|⁰)(?=\s|[.,;:!?\)\]\}<]|$)/gi, "$1^\\circ");
-}
-
-function normalizeDegreeMap(map) {
-  if (!map || typeof map !== "object") return map;
-  for (const k of Object.keys(map)) map[k] = normalizeDegreeLatex(map[k]);
-  return map;
-}
-
 /* ================= Text (GIỮ token + underline + ✅ TABLE) ================= */
 
 function wordXmlToTextKeepTokens(docXml) {
@@ -1037,13 +1030,11 @@ function wordXmlToTextKeepTokens(docXml) {
     .replace(/___MATH_TOKEN___(.*?)___END___/g, "[!m:$$$1$$]")
     .replace(/___IMG_TOKEN___(.*?)___END___/g, "[!img:$$$1$$]");
 
-  x = normalizeDegreeSymbolsText(
-    decodeXmlEntities(x)
-      .replace(/\r/g, "")
-      .replace(/[ \t]+\n/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim()
-  );
+  x = decodeXmlEntities(x)
+    .replace(/\r/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 
   return x;
 }
@@ -1443,7 +1434,7 @@ function sha1Buffer(buf){return crypto.createHash("sha1").update(buf).digest("he
 function makeZipMap(zip){const m=new Map(); for(const f of zip.files)m.set(f.path,f); return m;}
 function trimCaches(){const now=Date.now(); for(const [k,v] of UPLOAD_RESPONSE_CACHE) if(now-v.t>CACHE_TTL_MS) UPLOAD_RESPONSE_CACHE.delete(k); for(const [k,v] of LAZY_UPLOAD_CACHE) if(now-v.t>CACHE_TTL_MS) LAZY_UPLOAD_CACHE.delete(k);}
 function stripHeavyPayloadForFastResponse(payload){const out={...payload}; delete out.exam; delete out.questions; return out;}
-async function convertOneOleToLatexCached(zipMap, oleTarget){const oleFull=normalizeTargetToWordPath(oleTarget); const oleBuf=await getZipEntryBuffer(zipMap, oleFull); if(!oleBuf)return ""; const h=sha1Buffer(oleBuf); if(OLE_LATEX_CACHE.has(h))return OLE_LATEX_CACHE.get(h); let mml=extractMathMLFromOleScan(oleBuf)||""; if(!mml){try{mml=await rubyOleToMathML(oleBuf);}catch{mml="";}} if(mml)mml=normalizeMathMLForConvert(mml); const latex=normalizeDegreeLatex(mml?mathmlToLatexSafe(mml):""); OLE_LATEX_CACHE.set(h, latex||""); return latex||"";}
+async function convertOneOleToLatexCached(zipMap, oleTarget){const oleFull=normalizeTargetToWordPath(oleTarget); const oleBuf=await getZipEntryBuffer(zipMap, oleFull); if(!oleBuf)return ""; const h=sha1Buffer(oleBuf); if(OLE_LATEX_CACHE.has(h))return OLE_LATEX_CACHE.get(h); let mml=extractMathMLFromOleScan(oleBuf)||""; if(!mml){try{mml=await rubyOleToMathML(oleBuf);}catch{mml="";}} if(mml)mml=normalizeMathMLForConvert(mml); const latex=mml?mathmlToLatexSafe(mml):""; OLE_LATEX_CACHE.set(h, latex||""); return latex||"";}
 async function tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit=8){let idx=0; const found={}; const OBJECT_RE=/<w:object[\s\S]*?<\/w:object>/g; docXml=docXml.replace(OBJECT_RE,(block)=>{const ole=block.match(/<o:OLEObject\b[^>]*\br:id="([^"]+)"/); if(!ole)return block; const oleTarget=rels.get(ole[1]); if(!oleTarget)return block; const key=`mathtype_${++idx}`; found[key]={oleTarget}; return `[!m:$${key}$]`;}); const latexMap={}; const keys=Object.keys(found).slice(0,Math.max(0,Number(initialLimit||0))); await Promise.all(keys.map(async key=>{latexMap[key]=await convertOneOleToLatexCached(zipMap, found[key].oleTarget);})); return {outXml:docXml, latexMap, found};}
 
 async function tokenizeImagesAfterFast(docXml, rels, zipMap) {
@@ -1454,8 +1445,8 @@ async function tokenizeImagesAfterFast(docXml, rels, zipMap) {
   await Promise.all(jobs); return { outXml: docXml, imgMap };
 }
 
-async function buildFastUploadPayload(fileBuffer, opts={}){const fileHash=sha1Buffer(fileBuffer); const initialLimit=Number(opts.initialLimit??8); const cacheKey=`${fileHash}:fast:${initialLimit}`; const cached=UPLOAD_RESPONSE_CACHE.get(cacheKey); if(cached)return {...cached.payload,cached:true}; const zip=await unzipper.Open.buffer(fileBuffer); const zipMap=makeZipMap(zip); const docEntry=zipMap.get("word/document.xml"), relEntry=zipMap.get("word/_rels/document.xml.rels"); if(!docEntry||!relEntry)throw new Error("Missing document.xml or document.xml.rels"); let docXml=(await docEntry.buffer()).toString("utf8"); const rels=parseRels((await relEntry.buffer()).toString("utf8")); const images={}; const mt=await tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit); docXml=mt.outXml; const latexMap=normalizeDegreeMap(mt.latexMap); const omml=tokenizeWordEquationOmml(docXml); docXml=omml.outXml; Object.assign(latexMap,normalizeDegreeMap(omml.latexMap)); const imgTok=await tokenizeImagesAfterFast(docXml, rels, zipMap); docXml=imgTok.outXml; Object.assign(images,imgTok.imgMap); let text=normalizeDegreeSymbolsText(wordXmlToTextKeepTokens(docXml)); const exam=parseExamFromText(text); const sections=extractSectionTitles(text); exam.sections=sections; attachSectionOrderToQuestions(exam,sections); const blocks=normalizeDegreePlainFields(buildOrderedBlocks(exam)); normalizeDegreePlainFields(sections); normalizeDegreePlainFields(exam); LAZY_UPLOAD_CACHE.set(fileHash,{t:Date.now(),zipMap,rels,found:mt.found}); const payload=stripHeavyPayloadForFastResponse({ok:true,mode:"azota_ultra_lazy",uploadId:fileHash,total:exam.questions.length,sections,blocks,rawText:text,latex:latexMap,images,missingLatexKeys:Object.keys(mt.found).filter(k=>!latexMap[k]),debug:{lazy:true,initialLatex:Object.keys(latexMap).length,mathTypeTotal:Object.keys(mt.found).length,imagesCount:Object.keys(images).length,exam:{questions:exam.questions.length,mcq:exam.questions.filter(x=>x.type==="mcq").length,tf4:exam.questions.filter(x=>x.type==="tf4").length,short:exam.questions.filter(x=>x.type==="short").length}}}); UPLOAD_RESPONSE_CACHE.set(cacheKey,{t:Date.now(),payload}); return payload;}
-app.post("/latex-batch", express.json({limit:"2mb"}), async (req,res)=>{try{const {uploadId,keys}=req.body||{}; const job=LAZY_UPLOAD_CACHE.get(uploadId); if(!job)return res.status(404).json({ok:false,error:"Upload cache expired. Please upload again."}); const out={}; const list=Array.isArray(keys)?keys.slice(0,30):[]; await Promise.all(list.map(async key=>{const info=job.found?.[key]; if(info)out[key]=normalizeDegreeLatex(await convertOneOleToLatexCached(job.zipMap,info.oleTarget));})); job.t=Date.now(); res.json({ok:true,latex:out});}catch(err){res.status(500).json({ok:false,error:err.message||String(err)});}});
+async function buildFastUploadPayload(fileBuffer, opts={}){const fileHash=sha1Buffer(fileBuffer); const initialLimit=Number(opts.initialLimit??8); const cacheKey=`${fileHash}:fast:${initialLimit}:degree_fix_final_safe`; const cached=UPLOAD_RESPONSE_CACHE.get(cacheKey); if(cached)return {...cached.payload,cached:true}; const zip=await unzipper.Open.buffer(fileBuffer); const zipMap=makeZipMap(zip); const docEntry=zipMap.get("word/document.xml"), relEntry=zipMap.get("word/_rels/document.xml.rels"); if(!docEntry||!relEntry)throw new Error("Missing document.xml or document.xml.rels"); let docXml=(await docEntry.buffer()).toString("utf8"); const rels=parseRels((await relEntry.buffer()).toString("utf8")); const images={}; const mt=await tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit); docXml=mt.outXml; const latexMap=mt.latexMap; const omml=tokenizeWordEquationOmml(docXml); docXml=omml.outXml; Object.assign(latexMap,omml.latexMap); const imgTok=await tokenizeImagesAfterFast(docXml, rels, zipMap); docXml=imgTok.outXml; Object.assign(images,imgTok.imgMap); const text=fixDegreeTextOnly(wordXmlToTextKeepTokens(docXml)); const exam=parseExamFromText(text); const sections=extractSectionTitles(text); exam.sections=sections; attachSectionOrderToQuestions(exam,sections); const blocks=buildOrderedBlocks(exam); LAZY_UPLOAD_CACHE.set(fileHash,{t:Date.now(),zipMap,rels,found:mt.found}); const payload=stripHeavyPayloadForFastResponse({ok:true,mode:"azota_ultra_lazy",uploadId:fileHash,total:exam.questions.length,sections,blocks,rawText:text,latex:latexMap,images,missingLatexKeys:Object.keys(mt.found).filter(k=>!latexMap[k]),debug:{lazy:true,initialLatex:Object.keys(latexMap).length,mathTypeTotal:Object.keys(mt.found).length,imagesCount:Object.keys(images).length,exam:{questions:exam.questions.length,mcq:exam.questions.filter(x=>x.type==="mcq").length,tf4:exam.questions.filter(x=>x.type==="tf4").length,short:exam.questions.filter(x=>x.type==="short").length}}}); UPLOAD_RESPONSE_CACHE.set(cacheKey,{t:Date.now(),payload}); return payload;}
+app.post("/latex-batch", express.json({limit:"2mb"}), async (req,res)=>{try{const {uploadId,keys}=req.body||{}; const job=LAZY_UPLOAD_CACHE.get(uploadId); if(!job)return res.status(404).json({ok:false,error:"Upload cache expired. Please upload again."}); const out={}; const list=Array.isArray(keys)?keys.slice(0,30):[]; await Promise.all(list.map(async key=>{const info=job.found?.[key]; if(info)out[key]=await convertOneOleToLatexCached(job.zipMap,info.oleTarget);})); job.t=Date.now(); res.json({ok:true,latex:out});}catch(err){res.status(500).json({ok:false,error:err.message||String(err)});}});
 
 /* ================= API ================= */
 
@@ -1481,12 +1472,12 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     const images = {};
     const mt = await tokenizeMathTypeOleFirst(docXml, rels, zipMap, images);
     docXml = mt.outXml;
-    const latexMap = normalizeDegreeMap(mt.latexMap);
+    const latexMap = mt.latexMap;
 
     // 1.5) Word Equation OMML -> LaTeX (add-on, không đụng MathType cũ)
     const omml = tokenizeWordEquationOmml(docXml);
     docXml = omml.outXml;
-    Object.assign(latexMap, normalizeDegreeMap(omml.latexMap));
+    Object.assign(latexMap, omml.latexMap);
 
     // 2) normal images
     const imgTok = await tokenizeImagesAfter(docXml, rels, zipMap);
@@ -1494,7 +1485,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     Object.assign(images, imgTok.imgMap);
 
     // 3) text (giữ token + underline + ✅ TABLE)
-    let text = normalizeDegreeSymbolsText(wordXmlToTextKeepTokens(docXml));
+    const text = fixDegreeTextOnly(wordXmlToTextKeepTokens(docXml));
 
     // 4) parse exam output (GIỮ NGUYÊN)
     const exam = parseExamFromText(text);
@@ -1506,11 +1497,9 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     attachSectionOrderToQuestions(exam, sections);
 
-    const blocks = normalizeDegreePlainFields(buildOrderedBlocks(exam));
-    normalizeDegreePlainFields(sections);
-    normalizeDegreePlainFields(exam);
+    const blocks = buildOrderedBlocks(exam);
 
-    const questions = normalizeDegreePlainFields(legacyQuestionsFromExam(exam));
+    const questions = legacyQuestionsFromExam(exam);
 
     res.json({
       ok: true,
