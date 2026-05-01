@@ -341,7 +341,7 @@ function fixSetBracesHard(latex) {
 
   s = s.replace(/\\frac\{([^}]*)\}\{([^}]*)\}/g, (m, a, b) => {
     const bb = String(b).replace(/(\d)\s+(\d)/g, "$1$2");
-    return `\\frac{${a}}{${bb}}`;
+    return `\\dfrac{${a}}{${bb}}`;
   });
 
   s = s.replace(/\s+/g, " ").trim();
