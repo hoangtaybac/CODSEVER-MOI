@@ -1,3 +1,4 @@
+function fixLatex(text){return text.replace(/\\in\s*fty/g,'\\infty').replace(/in\s*fty/g,'\\infty');}
 // server.js
 // ✅ FULL CODE (FIX: tiêu đề PHẦN đúng vị trí như file Word gốc + GIỮ BẢNG trong Word)
 // - Không lệch khi mỗi PHẦN reset "Câu 1."
