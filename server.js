@@ -952,11 +952,11 @@ function wordTableXmlToHtmlTable(tblXml) {
 
 // FIX_ONLY_DEGREE_SYMBOL: chuan hoa ky hieu do, khong doi thuat toan khac
 function normalizeDegreeSymbolsText(s) {
-  // FIX_ONLY_DEGREE_SYMBOL_FINAL_V3: chỉ chuẩn hoá ký hiệu độ trong text thường.
-  // Bắt đủ các dạng Word/OCR hay sinh ra: 135o, 135º, 135˚, 135°, 135⁰, 135^0, 135^{0}.
+  // Chỉ đổi ký hiệu độ thật/sai OCR sau một số: 135o, 135º, 135˚, 135°, 135⁰.
+  // TUYỆT ĐỐI không đổi chữ số 0 thường, để không làm hỏng 10, 20, 30, 40...
   return String(s || "")
     .replace(/&deg;/gi, "°")
-    .replace(/(\d+)\s*(?:\^\s*\{\s*)?[0oº˚°⁰](?:\s*\})?(?=\s|[.,;:!?\)\]\}<]|$)/gi, "$1°");
+    .replace(/(\d+)\s*(?:[oº˚°⁰])(?=\s|[.,;:!?\)\]\}<]|$)/gi, "$1°");
 }
 
 function normalizeDegreePlainFields(obj) {
@@ -973,14 +973,13 @@ function normalizeDegreePlainFields(obj) {
   return obj;
 }
 function normalizeDegreeLatex(s) {
-  // FIX_ONLY_DEGREE_SYMBOL_FINAL_V3: chuẩn hoá riêng LaTeX để MathJax hiện ký hiệu độ dạng mũ tròn.
-  // Không đổi thuật toán tách câu/công thức; chỉ thay các biến thể "o/0/º/°" sau số thành ^\circ.
+  // Chuẩn hoá riêng LaTeX/MathType: chỉ đổi các dạng độ có dấu mũ hoặc chữ o/º/°/⁰ sau số.
+  // Không đổi số 0 thường đứng cuối số, tránh lỗi 10 -> 1°, 90 -> 9°.
   return String(s || "")
     .replace(/(\d+)\s*\^\s*\{\s*(?:0|o|º|˚|°|⁰|\\circ)\s*\}/gi, "$1^\\circ")
     .replace(/(\d+)\s*\^\s*(?:0|o|º|˚|°|⁰)/gi, "$1^\\circ")
     .replace(/(\d+)\s*(?:\\operatorname\s*\{\s*[o0]\s*\}|\\mathrm\s*\{\s*[o0]\s*\}|\\text\s*\{\s*[o0]\s*\})(?=\s|[.,;:!?\)\]\}<]|$)/gi, "$1^\\circ")
-    .replace(/(\d+)\s*(?:º|˚|°|⁰)(?=\s|[.,;:!?\)\]\}<]|$)/g, "$1^\\circ")
-    .replace(/(\d+)\s*[o0](?=\s|[.,;:!?\)\]\}<]|$)/gi, "$1^\\circ");
+    .replace(/(\d+)\s*(?:o|º|˚|°|⁰)(?=\s|[.,;:!?\)\]\}<]|$)/gi, "$1^\\circ");
 }
 
 function normalizeDegreeMap(map) {
