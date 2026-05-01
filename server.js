@@ -952,12 +952,11 @@ function wordTableXmlToHtmlTable(tblXml) {
 
 // FIX_ONLY_DEGREE_SYMBOL: chuan hoa ky hieu do, khong doi thuat toan khac
 function normalizeDegreeSymbolsText(s) {
-  // FIX_DEGREE_AZOTA_FINAL: xử lý dứt điểm các dạng Word/OCR hay trả về: 90o, 90 o, 90º, 90˚, 90°, 90ᵒ, 90^{o}.
-  // Chỉ đổi khi ngay trước là số và ngay sau là khoảng trắng/dấu câu/kết thúc chuỗi để không ảnh hưởng phần khác.
+  // FIX_ONLY_DEGREE_SYMBOL_FINAL_V3: chỉ chuẩn hoá ký hiệu độ trong text thường.
+  // Bắt đủ các dạng Word/OCR hay sinh ra: 135o, 135º, 135˚, 135°, 135⁰, 135^0, 135^{0}.
   return String(s || "")
-    .replace(/&deg;|&#176;|&#xB0;/gi, "°")
-    .replace(/&ordm;|&#186;|&#xBA;/gi, "º")
-    .replace(/(\d+)(?:\s|\u00A0|&nbsp;)*(?:\^\s*\{\s*)?[oOº°˚ᵒᴼ](?:\s*\})?(?=(?:\s|\u00A0|&nbsp;|[.,;:!?\)\]\}<>]|$))/g, "$1°");
+    .replace(/&deg;/gi, "°")
+    .replace(/(\d+)\s*(?:\^\s*\{\s*)?[0oº˚°⁰](?:\s*\})?(?=\s|[.,;:!?\)\]\}<]|$)/gi, "$1°");
 }
 
 function normalizeDegreePlainFields(obj) {
@@ -974,12 +973,14 @@ function normalizeDegreePlainFields(obj) {
   return obj;
 }
 function normalizeDegreeLatex(s) {
+  // FIX_ONLY_DEGREE_SYMBOL_FINAL_V3: chuẩn hoá riêng LaTeX để MathJax hiện ký hiệu độ dạng mũ tròn.
+  // Không đổi thuật toán tách câu/công thức; chỉ thay các biến thể "o/0/º/°" sau số thành ^\circ.
   return String(s || "")
-    .replace(/&deg;|&#176;|&#xB0;/gi, "°")
-    .replace(/&ordm;|&#186;|&#xBA;/gi, "º")
-    .replace(/(\d+)(?:\s|\u00A0|&nbsp;)*\^\s*\{\s*[oOº°˚ᵒᴼ]\s*\}/g, "$1^\\circ")
-    .replace(/(\d+)(?:\s|\u00A0|&nbsp;)*\^\s*[oOº°˚ᵒᴼ]/g, "$1^\\circ")
-    .replace(/(\d+)(?:\s|\u00A0|&nbsp;)*[oOº°˚ᵒᴼ](?=(?:\s|\u00A0|&nbsp;|[.,;:!?\)\]\}<>]|$))/g, "$1^\\circ");
+    .replace(/(\d+)\s*\^\s*\{\s*(?:0|o|º|˚|°|⁰|\\circ)\s*\}/gi, "$1^\\circ")
+    .replace(/(\d+)\s*\^\s*(?:0|o|º|˚|°|⁰)/gi, "$1^\\circ")
+    .replace(/(\d+)\s*(?:\\operatorname\s*\{\s*[o0]\s*\}|\\mathrm\s*\{\s*[o0]\s*\}|\\text\s*\{\s*[o0]\s*\})(?=\s|[.,;:!?\)\]\}<]|$)/gi, "$1^\\circ")
+    .replace(/(\d+)\s*(?:º|˚|°|⁰)(?=\s|[.,;:!?\)\]\}<]|$)/g, "$1^\\circ")
+    .replace(/(\d+)\s*[o0](?=\s|[.,;:!?\)\]\}<]|$)/gi, "$1^\\circ");
 }
 
 function normalizeDegreeMap(map) {
@@ -1443,7 +1444,7 @@ function sha1Buffer(buf){return crypto.createHash("sha1").update(buf).digest("he
 function makeZipMap(zip){const m=new Map(); for(const f of zip.files)m.set(f.path,f); return m;}
 function trimCaches(){const now=Date.now(); for(const [k,v] of UPLOAD_RESPONSE_CACHE) if(now-v.t>CACHE_TTL_MS) UPLOAD_RESPONSE_CACHE.delete(k); for(const [k,v] of LAZY_UPLOAD_CACHE) if(now-v.t>CACHE_TTL_MS) LAZY_UPLOAD_CACHE.delete(k);}
 function stripHeavyPayloadForFastResponse(payload){const out={...payload}; delete out.exam; delete out.questions; return out;}
-async function convertOneOleToLatexCached(zipMap, oleTarget){const oleFull=normalizeTargetToWordPath(oleTarget); const oleBuf=await getZipEntryBuffer(zipMap, oleFull); if(!oleBuf)return ""; const h=sha1Buffer(oleBuf); if(OLE_LATEX_CACHE.has(h))return OLE_LATEX_CACHE.get(h); let mml=extractMathMLFromOleScan(oleBuf)||""; if(!mml){try{mml=await rubyOleToMathML(oleBuf);}catch{mml="";}} if(mml)mml=normalizeMathMLForConvert(mml); const latex=mml?mathmlToLatexSafe(mml):""; OLE_LATEX_CACHE.set(h, latex||""); return latex||"";}
+async function convertOneOleToLatexCached(zipMap, oleTarget){const oleFull=normalizeTargetToWordPath(oleTarget); const oleBuf=await getZipEntryBuffer(zipMap, oleFull); if(!oleBuf)return ""; const h=sha1Buffer(oleBuf); if(OLE_LATEX_CACHE.has(h))return OLE_LATEX_CACHE.get(h); let mml=extractMathMLFromOleScan(oleBuf)||""; if(!mml){try{mml=await rubyOleToMathML(oleBuf);}catch{mml="";}} if(mml)mml=normalizeMathMLForConvert(mml); const latex=normalizeDegreeLatex(mml?mathmlToLatexSafe(mml):""); OLE_LATEX_CACHE.set(h, latex||""); return latex||"";}
 async function tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit=8){let idx=0; const found={}; const OBJECT_RE=/<w:object[\s\S]*?<\/w:object>/g; docXml=docXml.replace(OBJECT_RE,(block)=>{const ole=block.match(/<o:OLEObject\b[^>]*\br:id="([^"]+)"/); if(!ole)return block; const oleTarget=rels.get(ole[1]); if(!oleTarget)return block; const key=`mathtype_${++idx}`; found[key]={oleTarget}; return `[!m:$${key}$]`;}); const latexMap={}; const keys=Object.keys(found).slice(0,Math.max(0,Number(initialLimit||0))); await Promise.all(keys.map(async key=>{latexMap[key]=await convertOneOleToLatexCached(zipMap, found[key].oleTarget);})); return {outXml:docXml, latexMap, found};}
 
 async function tokenizeImagesAfterFast(docXml, rels, zipMap) {
@@ -1454,8 +1455,8 @@ async function tokenizeImagesAfterFast(docXml, rels, zipMap) {
   await Promise.all(jobs); return { outXml: docXml, imgMap };
 }
 
-async function buildFastUploadPayload(fileBuffer, opts={}){const fileHash=sha1Buffer(fileBuffer); const initialLimit=Number(opts.initialLimit??8); const cacheKey=`${fileHash}:fast:${initialLimit}:degree_fix_v4`; const cached=UPLOAD_RESPONSE_CACHE.get(cacheKey); if(cached)return {...cached.payload,cached:true}; const zip=await unzipper.Open.buffer(fileBuffer); const zipMap=makeZipMap(zip); const docEntry=zipMap.get("word/document.xml"), relEntry=zipMap.get("word/_rels/document.xml.rels"); if(!docEntry||!relEntry)throw new Error("Missing document.xml or document.xml.rels"); let docXml=(await docEntry.buffer()).toString("utf8"); const rels=parseRels((await relEntry.buffer()).toString("utf8")); const images={}; const mt=await tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit); docXml=mt.outXml; const latexMap=normalizeDegreeMap(mt.latexMap); const omml=tokenizeWordEquationOmml(docXml); docXml=omml.outXml; Object.assign(latexMap,normalizeDegreeMap(omml.latexMap)); const imgTok=await tokenizeImagesAfterFast(docXml, rels, zipMap); docXml=imgTok.outXml; Object.assign(images,imgTok.imgMap); let text=normalizeDegreeSymbolsText(wordXmlToTextKeepTokens(docXml)); const exam=parseExamFromText(text); const sections=extractSectionTitles(text); exam.sections=sections; attachSectionOrderToQuestions(exam,sections); const blocks=normalizeDegreePlainFields(buildOrderedBlocks(exam)); normalizeDegreePlainFields(sections); normalizeDegreePlainFields(exam); LAZY_UPLOAD_CACHE.set(fileHash,{t:Date.now(),zipMap,rels,found:mt.found}); const payload=stripHeavyPayloadForFastResponse({ok:true,mode:"azota_ultra_lazy",uploadId:fileHash,total:exam.questions.length,sections,blocks,rawText:text,latex:latexMap,images,missingLatexKeys:Object.keys(mt.found).filter(k=>!latexMap[k]),debug:{lazy:true,initialLatex:Object.keys(latexMap).length,mathTypeTotal:Object.keys(mt.found).length,imagesCount:Object.keys(images).length,exam:{questions:exam.questions.length,mcq:exam.questions.filter(x=>x.type==="mcq").length,tf4:exam.questions.filter(x=>x.type==="tf4").length,short:exam.questions.filter(x=>x.type==="short").length}}}); UPLOAD_RESPONSE_CACHE.set(cacheKey,{t:Date.now(),payload}); return payload;}
-app.post("/latex-batch", express.json({limit:"2mb"}), async (req,res)=>{try{const {uploadId,keys}=req.body||{}; const job=LAZY_UPLOAD_CACHE.get(uploadId); if(!job)return res.status(404).json({ok:false,error:"Upload cache expired. Please upload again."}); const out={}; const list=Array.isArray(keys)?keys.slice(0,30):[]; await Promise.all(list.map(async key=>{const info=job.found?.[key]; if(info)out[key]=await convertOneOleToLatexCached(job.zipMap,info.oleTarget);})); job.t=Date.now(); res.json({ok:true,latex:out});}catch(err){res.status(500).json({ok:false,error:err.message||String(err)});}});
+async function buildFastUploadPayload(fileBuffer, opts={}){const fileHash=sha1Buffer(fileBuffer); const initialLimit=Number(opts.initialLimit??8); const cacheKey=`${fileHash}:fast:${initialLimit}`; const cached=UPLOAD_RESPONSE_CACHE.get(cacheKey); if(cached)return {...cached.payload,cached:true}; const zip=await unzipper.Open.buffer(fileBuffer); const zipMap=makeZipMap(zip); const docEntry=zipMap.get("word/document.xml"), relEntry=zipMap.get("word/_rels/document.xml.rels"); if(!docEntry||!relEntry)throw new Error("Missing document.xml or document.xml.rels"); let docXml=(await docEntry.buffer()).toString("utf8"); const rels=parseRels((await relEntry.buffer()).toString("utf8")); const images={}; const mt=await tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit); docXml=mt.outXml; const latexMap=normalizeDegreeMap(mt.latexMap); const omml=tokenizeWordEquationOmml(docXml); docXml=omml.outXml; Object.assign(latexMap,normalizeDegreeMap(omml.latexMap)); const imgTok=await tokenizeImagesAfterFast(docXml, rels, zipMap); docXml=imgTok.outXml; Object.assign(images,imgTok.imgMap); let text=normalizeDegreeSymbolsText(wordXmlToTextKeepTokens(docXml)); const exam=parseExamFromText(text); const sections=extractSectionTitles(text); exam.sections=sections; attachSectionOrderToQuestions(exam,sections); const blocks=normalizeDegreePlainFields(buildOrderedBlocks(exam)); normalizeDegreePlainFields(sections); normalizeDegreePlainFields(exam); LAZY_UPLOAD_CACHE.set(fileHash,{t:Date.now(),zipMap,rels,found:mt.found}); const payload=stripHeavyPayloadForFastResponse({ok:true,mode:"azota_ultra_lazy",uploadId:fileHash,total:exam.questions.length,sections,blocks,rawText:text,latex:latexMap,images,missingLatexKeys:Object.keys(mt.found).filter(k=>!latexMap[k]),debug:{lazy:true,initialLatex:Object.keys(latexMap).length,mathTypeTotal:Object.keys(mt.found).length,imagesCount:Object.keys(images).length,exam:{questions:exam.questions.length,mcq:exam.questions.filter(x=>x.type==="mcq").length,tf4:exam.questions.filter(x=>x.type==="tf4").length,short:exam.questions.filter(x=>x.type==="short").length}}}); UPLOAD_RESPONSE_CACHE.set(cacheKey,{t:Date.now(),payload}); return payload;}
+app.post("/latex-batch", express.json({limit:"2mb"}), async (req,res)=>{try{const {uploadId,keys}=req.body||{}; const job=LAZY_UPLOAD_CACHE.get(uploadId); if(!job)return res.status(404).json({ok:false,error:"Upload cache expired. Please upload again."}); const out={}; const list=Array.isArray(keys)?keys.slice(0,30):[]; await Promise.all(list.map(async key=>{const info=job.found?.[key]; if(info)out[key]=normalizeDegreeLatex(await convertOneOleToLatexCached(job.zipMap,info.oleTarget));})); job.t=Date.now(); res.json({ok:true,latex:out});}catch(err){res.status(500).json({ok:false,error:err.message||String(err)});}});
 
 /* ================= API ================= */
 
