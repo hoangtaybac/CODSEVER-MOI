@@ -547,10 +547,77 @@ function normalizeLatexMapDegrees(latexMap) {
   if (!latexMap || typeof latexMap !== "object") return latexMap || {};
   for (const key of Object.keys(latexMap)) {
     if (typeof latexMap[key] === "string") {
-      latexMap[key] = normalizePercentLatex(normalizeDegreeLatex(latexMap[key]));
+      latexMap[key] = normalizeGeometryLatex(normalizePercentLatex(normalizeDegreeLatex(latexMap[key])));
     }
   }
   return latexMap;
+}
+
+
+// ✅ FIX FULL HÌNH HỌC:
+// - \widehat{aAn} -> \widehat{aAn}
+// - \overline{A B} -> \overline{AB}
+// - \vec{A B} -> \overrightarrow{AB}
+// - góc ABC: \angle A B C -> \angle ABC
+// - cung: \overset{\frown}{A B} -> \overset{\frown}{AB}
+// - song song / vuông góc / thuộc / không thuộc một số lỗi OCR thường gặp
+function normalizeGeometryLatex(latex) {
+  if (!latex) return latex;
+  let s = String(latex);
+
+  const compactLetters = (x) => String(x || "").replace(/\s+/g, "");
+
+  // Mũ góc/hình học: dùng widehat để phủ toàn bộ cụm chữ
+  s = s.replace(/\\hat\s*\{\s*([^{}]*?[A-Za-z][^{}]*?)\s*\}/g, (_, inner) => {
+    return "\\widehat{" + compactLetters(inner) + "}";
+  });
+
+  // Nếu đã là widehat nhưng còn khoảng trắng thì bỏ khoảng trắng
+  s = s.replace(/\\widehat\s*\{\s*([^{}]*?[A-Za-z][^{}]*?)\s*\}/g, (_, inner) => {
+    return "\\widehat{" + compactLetters(inner) + "}";
+  });
+
+  // Đoạn thẳng / đường thẳng: overline{A B} -> overline{AB}
+  s = s.replace(/\\overline\s*\{\s*([^{}]*?[A-Za-z][^{}]*?)\s*\}/g, (_, inner) => {
+    return "\\overline{" + compactLetters(inner) + "}";
+  });
+
+  // Vector: vec{A B} / vector{A B} -> overrightarrow{AB}
+  s = s.replace(/\\(?:vec|vector)\s*\{\s*([^{}]*?[A-Za-z][^{}]*?)\s*\}/g, (_, inner) => {
+    return "\\overrightarrow{" + compactLetters(inner) + "}";
+  });
+
+  // Nếu đã là overrightarrow nhưng còn khoảng trắng
+  s = s.replace(/\\overrightarrow\s*\{\s*([^{}]*?[A-Za-z][^{}]*?)\s*\}/g, (_, inner) => {
+    return "\\overrightarrow{" + compactLetters(inner) + "}";
+  });
+
+  // Cung AB: \overset{\frown}{A B} -> \overset{\frown}{AB}
+  s = s.replace(/\\overset\s*\{\s*\\frown\s*\}\s*\{\s*([^{}]*?[A-Za-z][^{}]*?)\s*\}/g, (_, inner) => {
+    return "\\overset{\\frown}{" + compactLetters(inner) + "}";
+  });
+
+  // Góc: \angle A B C -> \angle ABC
+  s = s.replace(/\\angle\s+([A-Za-z])\s+([A-Za-z])\s+([A-Za-z])/g, "\\angle $1$2$3");
+  s = s.replace(/\\angle\s*\{\s*([A-Za-z])\s+([A-Za-z])\s+([A-Za-z])\s*\}/g, "\\angle $1$2$3");
+
+  // Tam giác: \triangle A B C -> \triangle ABC
+  s = s.replace(/\\triangle\s+([A-Za-z])\s+([A-Za-z])\s+([A-Za-z])/g, "\\triangle $1$2$3");
+  s = s.replace(/\\Delta\s+([A-Za-z])\s+([A-Za-z])\s+([A-Za-z])/g, "\\Delta $1$2$3");
+
+  // Một số ký hiệu hình học hay bị OCR ra chữ
+  s = s.replace(/(^|[^\\])\bparallel\b/g, "$1\\parallel");
+  s = s.replace(/(^|[^\\])\bperp\b/g, "$1\\perp");
+  s = s.replace(/(^|[^\\])\bin\b/g, "$1\\in");
+  s = s.replace(/(^|[^\\])\bnotin\b/g, "$1\\notin");
+
+  // Dọn khoảng trắng thừa quanh các ký hiệu hình học
+  s = s.replace(/\s*\\parallel\s*/g, " \\parallel ");
+  s = s.replace(/\s*\\perp\s*/g, " \\perp ");
+  s = s.replace(/\s*\\in\s*/g, " \\in ");
+  s = s.replace(/\s*\\notin\s*/g, " \\notin ");
+
+  return s.replace(/\s+/g, " ").trim();
 }
 
 function postProcessLatex(latex, mathmlMaybe = "") {
@@ -560,10 +627,10 @@ function postProcessLatex(latex, mathmlMaybe = "") {
   s = restoreArrowAndCoreCommands(s);
   s = fixPiecewiseFunction(s);
   s = fixSqrtLatex(s, mathmlMaybe);
-  return normalizePercentLatex(normalizeDegreeLatex(String(s || "")
+  return normalizeGeometryLatex(normalizePercentLatex(normalizeDegreeLatex(String(s || "")
     .replace(/[ \t]+/g, " ")
     .replace(/\s*\\\\\s*/g, " \\\\ ")
-    .trim()));
+    .trim())));
 }
 
 /** ✅ Radical-safe: tokenize msqrt -> convert -> rebuild sqrt */
@@ -852,7 +919,7 @@ function ommlTex(node) {
   if (name === "acc") {
     const chr = ommlVal(ommlFirst(ommlFirst(node, "accPr"), "chr"), "^");
     const map = { "^": "hat", "~": "tilde", "→": "vec", "¯": "bar", ".": "dot", "¨": "ddot" };
-    return `\\${map[chr] || "widehat"}{${e()}}`;
+    return `\\${map[chr] || "hat"}{${e()}}`;
   }
   if (name === "groupChr") {
     const chr = ommlVal(ommlFirst(ommlFirst(node, "groupChrPr"), "chr"), "⏞");
@@ -1456,7 +1523,7 @@ function sha1Buffer(buf){return crypto.createHash("sha1").update(buf).digest("he
 function makeZipMap(zip){const m=new Map(); for(const f of zip.files)m.set(f.path,f); return m;}
 function trimCaches(){const now=Date.now(); for(const [k,v] of UPLOAD_RESPONSE_CACHE) if(now-v.t>CACHE_TTL_MS) UPLOAD_RESPONSE_CACHE.delete(k); for(const [k,v] of LAZY_UPLOAD_CACHE) if(now-v.t>CACHE_TTL_MS) LAZY_UPLOAD_CACHE.delete(k);}
 function stripHeavyPayloadForFastResponse(payload){const out={...payload}; delete out.exam; delete out.questions; return out;}
-async function convertOneOleToLatexCached(zipMap, oleTarget){const oleFull=normalizeTargetToWordPath(oleTarget); const oleBuf=await getZipEntryBuffer(zipMap, oleFull); if(!oleBuf)return ""; const h=sha1Buffer(oleBuf); if(OLE_LATEX_CACHE.has(h))return OLE_LATEX_CACHE.get(h); let mml=extractMathMLFromOleScan(oleBuf)||""; if(!mml){try{mml=await rubyOleToMathML(oleBuf);}catch{mml="";}} if(mml)mml=normalizeMathMLForConvert(mml); const latex=normalizePercentLatex(normalizeDegreeLatex(mml?mathmlToLatexSafe(mml):"")); OLE_LATEX_CACHE.set(h, latex||""); return latex||"";}
+async function convertOneOleToLatexCached(zipMap, oleTarget){const oleFull=normalizeTargetToWordPath(oleTarget); const oleBuf=await getZipEntryBuffer(zipMap, oleFull); if(!oleBuf)return ""; const h=sha1Buffer(oleBuf); if(OLE_LATEX_CACHE.has(h))return OLE_LATEX_CACHE.get(h); let mml=extractMathMLFromOleScan(oleBuf)||""; if(!mml){try{mml=await rubyOleToMathML(oleBuf);}catch{mml="";}} if(mml)mml=normalizeMathMLForConvert(mml); const latex=normalizeGeometryLatex(normalizePercentLatex(normalizeDegreeLatex(mml?mathmlToLatexSafe(mml):""))); OLE_LATEX_CACHE.set(h, latex||""); return latex||"";}
 async function tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit=8){let idx=0; const found={}; const OBJECT_RE=/<w:object[\s\S]*?<\/w:object>/g; docXml=docXml.replace(OBJECT_RE,(block)=>{const ole=block.match(/<o:OLEObject\b[^>]*\br:id="([^"]+)"/); if(!ole)return block; const oleTarget=rels.get(ole[1]); if(!oleTarget)return block; const key=`mathtype_${++idx}`; found[key]={oleTarget}; return `[!m:$${key}$]`;}); const latexMap={}; const keys=Object.keys(found).slice(0,Math.max(0,Number(initialLimit||0))); await Promise.all(keys.map(async key=>{latexMap[key]=await convertOneOleToLatexCached(zipMap, found[key].oleTarget);})); return {outXml:docXml, latexMap, found};}
 
 async function tokenizeImagesAfterFast(docXml, rels, zipMap) {
