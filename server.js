@@ -1,3 +1,21 @@
+
+function fixDegree(text) {
+  if (!text) return text;
+  return text
+    .replace(/(\d{1,3})\s*o\b/g, '$1^\\circ')
+    .replace(/(\d{1,3})\s*⁰/g, '$1^\\circ')
+    .replace(/(\d{1,3})\s*º/g, '$1^\\circ');
+}
+
+function deepFixDegree(obj) {
+  if (typeof obj === "string") return fixDegree(obj);
+  if (Array.isArray(obj)) return obj.map(deepFixDegree);
+  if (obj && typeof obj === "object") {
+    for (let k in obj) obj[k] = deepFixDegree(obj[k]);
+  }
+  return obj;
+}
+
 // server.js
 // ✅ FULL CODE (FIX: tiêu đề PHẦN đúng vị trí như file Word gốc + GIỮ BẢNG trong Word)
 // - Không lệch khi mỗi PHẦN reset "Câu 1."
