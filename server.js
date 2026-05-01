@@ -341,7 +341,7 @@ function fixSetBracesHard(latex) {
 
   s = s.replace(/\\frac\{([^}]*)\}\{([^}]*)\}/g, (m, a, b) => {
     const bb = String(b).replace(/(\d)\s+(\d)/g, "$1$2");
-    return `\\frac{${a}}{${bb}}`;
+    return `\\dfrac{${a}}{${bb}}`;
   });
 
   s = s.replace(/\s+/g, " ").trim();
@@ -952,11 +952,13 @@ function wordTableXmlToHtmlTable(tblXml) {
 
 // FIX_ONLY_DEGREE_SYMBOL: chuan hoa ky hieu do, khong doi thuat toan khac
 function normalizeDegreeSymbolsText(s) {
-  // FIX_ONLY_DEGREE_SYMBOL_FINAL: chỉ chuẩn hoá ký hiệu độ trong text thường.
+  // Chỉ sửa ký hiệu độ sau số: 90o / 90ᵒ / 90º / 90° / 90^o / 90^{o} -> 90°
+  // Không đụng các thuật toán parse câu hỏi/công thức khác.
   return String(s || "")
     .replace(/&deg;/gi, "°")
-    .replace(/(\d+)\s*(?:º|˚|°)(?=\s|[.,;:!?\)\]\}<]|$)/g, "$1°")
-    .replace(/(\d+)\s*(?:\^\s*\{\s*)?[oº˚°](?:\s*\})?(?=\s|[.,;:!?\)\]\}<]|$)/gi, "$1°");
+    .replace(/&#176;|&#xB0;|&#x00B0;/gi, "°")
+    .replace(/(\d+)\s*(?:\^\s*(?:\{\s*)?)?[oOº°˚ᵒᴼ⁰ᵓ](?:\s*\})?(?=\s|[.,;:!?\)\]\}<]|$)/g, "$1°")
+    .replace(/(\d+)\s*(?:\^\s*(?:\{\s*)?)?[оО](?:\s*\})?(?=\s|[.,;:!?\)\]\}<]|$)/g, "$1°");
 }
 
 function normalizeDegreePlainFields(obj) {
