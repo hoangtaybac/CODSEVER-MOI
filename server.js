@@ -852,7 +852,7 @@ function ommlTex(node) {
   if (name === "acc") {
     const chr = ommlVal(ommlFirst(ommlFirst(node, "accPr"), "chr"), "^");
     const map = { "^": "hat", "~": "tilde", "→": "vec", "¯": "bar", ".": "dot", "¨": "ddot" };
-    return `\\${map[chr] || "hat"}{${e()}}`;
+    return `\\${map[chr] || "widehat"}{${e()}}`;
   }
   if (name === "groupChr") {
     const chr = ommlVal(ommlFirst(ommlFirst(node, "groupChrPr"), "chr"), "⏞");
