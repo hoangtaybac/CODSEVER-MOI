@@ -1,21 +1,3 @@
-
-function fixDegree(text) {
-  if (!text) return text;
-  return text
-    .replace(/(\d{1,3})\s*o\b/g, '$1^\\circ')
-    .replace(/(\d{1,3})\s*⁰/g, '$1^\\circ')
-    .replace(/(\d{1,3})\s*º/g, '$1^\\circ');
-}
-
-function deepFixDegree(obj) {
-  if (typeof obj === "string") return fixDegree(obj);
-  if (Array.isArray(obj)) return obj.map(deepFixDegree);
-  if (obj && typeof obj === "object") {
-    for (let k in obj) obj[k] = deepFixDegree(obj[k]);
-  }
-  return obj;
-}
-
 // server.js
 // ✅ FULL CODE (FIX: tiêu đề PHẦN đúng vị trí như file Word gốc + GIỮ BẢNG trong Word)
 // - Không lệch khi mỗi PHẦN reset "Câu 1."
@@ -518,16 +500,6 @@ function fixSqrtLatex(latex, mathmlMaybe = "") {
   return s;
 }
 
-
-function fixDegreeLatexOnly(latex) {
-  let s = String(latex || "");
-  // Chỉ sửa ký hiệu độ bị MathType/OMML đọc thành chữ o/º/⁰ ngay sau số.
-  // KHÔNG sửa số 10, 20, 30... vì không đụng tới chữ số 0 thường.
-  // Ví dụ: 135o, 135 o, 90º, 60⁰, 45\mathrm{o} -> 135^{\circ}, ...
-  s = s.replace(/(\d{1,3})\s*(?:\\mathrm\s*\{\s*[oO]\s*\}|\\text\s*\{\s*[oO]\s*\}|[oOº⁰°])(?=\s|$|[.,;:)\]}])/g, "$1^{\\circ}");
-  return s;
-}
-
 function postProcessLatex(latex, mathmlMaybe = "") {
   let s = latex || "";
   s = sanitizeLatexStrict(s);
@@ -535,7 +507,6 @@ function postProcessLatex(latex, mathmlMaybe = "") {
   s = restoreArrowAndCoreCommands(s);
   s = fixPiecewiseFunction(s);
   s = fixSqrtLatex(s, mathmlMaybe);
-  s = fixDegreeLatexOnly(s);
   return String(s || "")
     .replace(/[ \t]+/g, " ")
     .replace(/\s*\\\\\s*/g, " \\\\ ")
