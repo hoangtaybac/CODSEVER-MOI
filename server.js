@@ -522,10 +522,33 @@ function normalizeDegreeLatex(latex) {
   return s;
 }
 
+
+// ✅ FIX dấu % trong LaTeX: 20% / 20 % -> 20\%
+function normalizePercentLatex(latex) {
+  if (!latex) return latex;
+  let s = String(latex);
+
+  // Giữ lại các dấu % đã đúng để tránh biến \% thành \\%
+  s = s.replace(/\\%/g, "__PERCENT_ESCAPED__");
+
+  // 20% hoặc 20 % hoặc x% -> 20\%
+  s = s.replace(/([0-9]+(?:[.,][0-9]+)?|[A-Za-z])\s*%/g, "$1\\%");
+
+  // Trường hợp % đứng riêng trong latex, vẫn escape để MathJax không coi là comment
+  s = s.replace(/(?<!\\)%/g, "\\%");
+
+  // Trả lại các dấu % đã escape sẵn
+  s = s.replace(/__PERCENT_ESCAPED__/g, "\\%");
+
+  return s;
+}
+
 function normalizeLatexMapDegrees(latexMap) {
   if (!latexMap || typeof latexMap !== "object") return latexMap || {};
   for (const key of Object.keys(latexMap)) {
-    if (typeof latexMap[key] === "string") latexMap[key] = normalizeDegreeLatex(latexMap[key]);
+    if (typeof latexMap[key] === "string") {
+      latexMap[key] = normalizePercentLatex(normalizeDegreeLatex(latexMap[key]));
+    }
   }
   return latexMap;
 }
@@ -537,10 +560,10 @@ function postProcessLatex(latex, mathmlMaybe = "") {
   s = restoreArrowAndCoreCommands(s);
   s = fixPiecewiseFunction(s);
   s = fixSqrtLatex(s, mathmlMaybe);
-  return normalizeDegreeLatex(String(s || "")
+  return normalizePercentLatex(normalizeDegreeLatex(String(s || "")
     .replace(/[ \t]+/g, " ")
     .replace(/\s*\\\\\s*/g, " \\\\ ")
-    .trim());
+    .trim()));
 }
 
 /** ✅ Radical-safe: tokenize msqrt -> convert -> rebuild sqrt */
@@ -1433,7 +1456,7 @@ function sha1Buffer(buf){return crypto.createHash("sha1").update(buf).digest("he
 function makeZipMap(zip){const m=new Map(); for(const f of zip.files)m.set(f.path,f); return m;}
 function trimCaches(){const now=Date.now(); for(const [k,v] of UPLOAD_RESPONSE_CACHE) if(now-v.t>CACHE_TTL_MS) UPLOAD_RESPONSE_CACHE.delete(k); for(const [k,v] of LAZY_UPLOAD_CACHE) if(now-v.t>CACHE_TTL_MS) LAZY_UPLOAD_CACHE.delete(k);}
 function stripHeavyPayloadForFastResponse(payload){const out={...payload}; delete out.exam; delete out.questions; return out;}
-async function convertOneOleToLatexCached(zipMap, oleTarget){const oleFull=normalizeTargetToWordPath(oleTarget); const oleBuf=await getZipEntryBuffer(zipMap, oleFull); if(!oleBuf)return ""; const h=sha1Buffer(oleBuf); if(OLE_LATEX_CACHE.has(h))return OLE_LATEX_CACHE.get(h); let mml=extractMathMLFromOleScan(oleBuf)||""; if(!mml){try{mml=await rubyOleToMathML(oleBuf);}catch{mml="";}} if(mml)mml=normalizeMathMLForConvert(mml); const latex=normalizeDegreeLatex(mml?mathmlToLatexSafe(mml):""); OLE_LATEX_CACHE.set(h, latex||""); return latex||"";}
+async function convertOneOleToLatexCached(zipMap, oleTarget){const oleFull=normalizeTargetToWordPath(oleTarget); const oleBuf=await getZipEntryBuffer(zipMap, oleFull); if(!oleBuf)return ""; const h=sha1Buffer(oleBuf); if(OLE_LATEX_CACHE.has(h))return OLE_LATEX_CACHE.get(h); let mml=extractMathMLFromOleScan(oleBuf)||""; if(!mml){try{mml=await rubyOleToMathML(oleBuf);}catch{mml="";}} if(mml)mml=normalizeMathMLForConvert(mml); const latex=normalizePercentLatex(normalizeDegreeLatex(mml?mathmlToLatexSafe(mml):"")); OLE_LATEX_CACHE.set(h, latex||""); return latex||"";}
 async function tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit=8){let idx=0; const found={}; const OBJECT_RE=/<w:object[\s\S]*?<\/w:object>/g; docXml=docXml.replace(OBJECT_RE,(block)=>{const ole=block.match(/<o:OLEObject\b[^>]*\br:id="([^"]+)"/); if(!ole)return block; const oleTarget=rels.get(ole[1]); if(!oleTarget)return block; const key=`mathtype_${++idx}`; found[key]={oleTarget}; return `[!m:$${key}$]`;}); const latexMap={}; const keys=Object.keys(found).slice(0,Math.max(0,Number(initialLimit||0))); await Promise.all(keys.map(async key=>{latexMap[key]=await convertOneOleToLatexCached(zipMap, found[key].oleTarget);})); return {outXml:docXml, latexMap, found};}
 
 async function tokenizeImagesAfterFast(docXml, rels, zipMap) {
