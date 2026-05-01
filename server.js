@@ -1,14 +1,3 @@
-
-function fixLatex(latex) {
-  if (!latex) return latex;
-  return latex
-    .replace(/\\in\s*fty/g, "\\infty")
-    .replace(/-\s*\\infty/g, "-\\infty")
-    .replace(/\\left\s*\(\s*\\right\./g, "\\left(\\right.")
-    .replace(/\\left\.\s*\\right\s*\)/g, "\\left.\\right)")
-    .replace(/\\([a-z]+)\s+([a-z]+)/g, "\\$1$2");
-}
-
 // server.js
 // ✅ FULL CODE (FIX: tiêu đề PHẦN đúng vị trí như file Word gốc + GIỮ BẢNG trong Word)
 // - Không lệch khi mỗi PHẦN reset "Câu 1."
@@ -425,7 +414,7 @@ function mathMLCellToLatex(cellXml) {
   const cell = String(cellXml || "").trim();
   if (!cell) return "";
   try {
-    let out = fixLatex(MathMLToLaTeX.convert(`<math>${cell}</math>`)) || "";
+    let out = MathMLToLaTeX.convert(`<math>${cell}</math>`) || "";
     out = postProcessLatex(out, `<math>${cell}</math>`);
     if (out) return out;
   } catch {}
@@ -660,7 +649,7 @@ function mathmlToLatexSafe(mml, _depth = 0) {
     const tok = tokenizeMsqrtBlocks(m);
     const mTok = tok.out;
 
-    let latex0 = (fixLatex(MathMLToLaTeX.convert(mTok)) || "").trim();
+    let latex0 = (MathMLToLaTeX.convert(mTok) || "").trim();
     latex0 = postProcessLatex(latex0, mTok);
 
     if (!tok.tokens.length) {
@@ -683,7 +672,7 @@ function mathmlToLatexSafe(mml, _depth = 0) {
       if (canRecurse) {
         innerLatex = mathmlToLatexSafe(innerMath, depth + 1);
       } else {
-        innerLatex = (fixLatex(MathMLToLaTeX.convert(normalizeMathMLForConvert(innerMath))) || "").trim();
+        innerLatex = (MathMLToLaTeX.convert(normalizeMathMLForConvert(innerMath)) || "").trim();
         innerLatex = postProcessLatex(innerLatex, innerMath);
       }
 
