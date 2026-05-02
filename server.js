@@ -618,6 +618,14 @@ function normalizeGeometryLatex(latex) {
   s = s.replace(/\s*\\notin\s*/g, " \\notin ");
 
   return s.replace(/\s+/g, " ").trim();
+  // Chỉnh sửa kí hiệu vô cùng 
+  // FIX infinity lỗi OCR
+s = s
+  .replace(/\\in\s*fty/g, "\\infty")
+  .replace(/in\s*fty/g, "\\infty")
+  .replace(/\\inf\s*ty/g, "\\infty")
+  .replace(/inf\s*ty/g, "\\infty")
+  .replace(/∞/g, "\\infty");
 }
 
 function postProcessLatex(latex, mathmlMaybe = "") {
