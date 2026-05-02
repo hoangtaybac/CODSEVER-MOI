@@ -543,11 +543,32 @@ function normalizePercentLatex(latex) {
   return s;
 }
 
+
+// ✅ FIX infinity trong LaTeX: tránh lỗi OCR/normalize làm \infty thành \in fty
+function normalizeInfinityLatex(latex) {
+  if (!latex) return latex;
+  let s = String(latex);
+
+  // Giữ dạng đúng, kể cả khi có khoảng trắng lạ
+  s = s.replace(/\\in\s*fty\b/g, "\\infty");
+
+  // Các lỗi OCR thường gặp: in fty, inf ty, infinity, ∞
+  s = s.replace(/(^|[^\\A-Za-z])in\s*fty\b/gi, "$1\\infty");
+  s = s.replace(/(^|[^\\A-Za-z])inf\s*ty\b/gi, "$1\\infty");
+  s = s.replace(/(^|[^\\A-Za-z])infinity\b/gi, "$1\\infty");
+  s = s.replace(/∞/g, "\\infty");
+
+  // Dọn trường hợp bị tách sau các bước thay thế khác: \in fty -> \infty
+  s = s.replace(/\\in\s+fty\b/g, "\\infty");
+
+  return s;
+}
+
 function normalizeLatexMapDegrees(latexMap) {
   if (!latexMap || typeof latexMap !== "object") return latexMap || {};
   for (const key of Object.keys(latexMap)) {
     if (typeof latexMap[key] === "string") {
-      latexMap[key] = normalizeGeometryLatex(normalizePercentLatex(normalizeDegreeLatex(latexMap[key])));
+      latexMap[key] = normalizeInfinityLatex(normalizeGeometryLatex(normalizeInfinityLatex(normalizePercentLatex(normalizeDegreeLatex(latexMap[key])))));
     }
   }
   return latexMap;
@@ -614,18 +635,10 @@ function normalizeGeometryLatex(latex) {
   // Dọn khoảng trắng thừa quanh các ký hiệu hình học
   s = s.replace(/\s*\\parallel\s*/g, " \\parallel ");
   s = s.replace(/\s*\\perp\s*/g, " \\perp ");
-  s = s.replace(/\s*\\in\s*/g, " \\in ");
-  s = s.replace(/\s*\\notin\s*/g, " \\notin ");
+  s = s.replace(/\s*\\in\b\s*/g, " \\in ");
+  s = s.replace(/\s*\\notin\b\s*/g, " \\notin ");
 
   return s.replace(/\s+/g, " ").trim();
-  // Chỉnh sửa kí hiệu vô cùng 
-  // FIX infinity lỗi OCR
-s = s
-  .replace(/\\in\s*fty/g, "\\infty")
-  .replace(/in\s*fty/g, "\\infty")
-  .replace(/\\inf\s*ty/g, "\\infty")
-  .replace(/inf\s*ty/g, "\\infty")
-  .replace(/∞/g, "\\infty");
 }
 
 function postProcessLatex(latex, mathmlMaybe = "") {
@@ -635,10 +648,10 @@ function postProcessLatex(latex, mathmlMaybe = "") {
   s = restoreArrowAndCoreCommands(s);
   s = fixPiecewiseFunction(s);
   s = fixSqrtLatex(s, mathmlMaybe);
-  return normalizeGeometryLatex(normalizePercentLatex(normalizeDegreeLatex(String(s || "")
+  return normalizeInfinityLatex(normalizeGeometryLatex(normalizeInfinityLatex(normalizePercentLatex(normalizeDegreeLatex(String(s || "")
     .replace(/[ \t]+/g, " ")
     .replace(/\s*\\\\\s*/g, " \\\\ ")
-    .trim())));
+    .trim())))));
 }
 
 /** ✅ Radical-safe: tokenize msqrt -> convert -> rebuild sqrt */
@@ -1531,7 +1544,7 @@ function sha1Buffer(buf){return crypto.createHash("sha1").update(buf).digest("he
 function makeZipMap(zip){const m=new Map(); for(const f of zip.files)m.set(f.path,f); return m;}
 function trimCaches(){const now=Date.now(); for(const [k,v] of UPLOAD_RESPONSE_CACHE) if(now-v.t>CACHE_TTL_MS) UPLOAD_RESPONSE_CACHE.delete(k); for(const [k,v] of LAZY_UPLOAD_CACHE) if(now-v.t>CACHE_TTL_MS) LAZY_UPLOAD_CACHE.delete(k);}
 function stripHeavyPayloadForFastResponse(payload){const out={...payload}; delete out.exam; delete out.questions; return out;}
-async function convertOneOleToLatexCached(zipMap, oleTarget){const oleFull=normalizeTargetToWordPath(oleTarget); const oleBuf=await getZipEntryBuffer(zipMap, oleFull); if(!oleBuf)return ""; const h=sha1Buffer(oleBuf); if(OLE_LATEX_CACHE.has(h))return OLE_LATEX_CACHE.get(h); let mml=extractMathMLFromOleScan(oleBuf)||""; if(!mml){try{mml=await rubyOleToMathML(oleBuf);}catch{mml="";}} if(mml)mml=normalizeMathMLForConvert(mml); const latex=normalizeGeometryLatex(normalizePercentLatex(normalizeDegreeLatex(mml?mathmlToLatexSafe(mml):""))); OLE_LATEX_CACHE.set(h, latex||""); return latex||"";}
+async function convertOneOleToLatexCached(zipMap, oleTarget){const oleFull=normalizeTargetToWordPath(oleTarget); const oleBuf=await getZipEntryBuffer(zipMap, oleFull); if(!oleBuf)return ""; const h=sha1Buffer(oleBuf); if(OLE_LATEX_CACHE.has(h))return OLE_LATEX_CACHE.get(h); let mml=extractMathMLFromOleScan(oleBuf)||""; if(!mml){try{mml=await rubyOleToMathML(oleBuf);}catch{mml="";}} if(mml)mml=normalizeMathMLForConvert(mml); const latex=normalizeInfinityLatex(normalizeGeometryLatex(normalizeInfinityLatex(normalizePercentLatex(normalizeDegreeLatex(mml?mathmlToLatexSafe(mml):""))))); OLE_LATEX_CACHE.set(h, latex||""); return latex||"";}
 async function tokenizeMathTypeLazy(docXml, rels, zipMap, initialLimit=8){let idx=0; const found={}; const OBJECT_RE=/<w:object[\s\S]*?<\/w:object>/g; docXml=docXml.replace(OBJECT_RE,(block)=>{const ole=block.match(/<o:OLEObject\b[^>]*\br:id="([^"]+)"/); if(!ole)return block; const oleTarget=rels.get(ole[1]); if(!oleTarget)return block; const key=`mathtype_${++idx}`; found[key]={oleTarget}; return `[!m:$${key}$]`;}); const latexMap={}; const keys=Object.keys(found).slice(0,Math.max(0,Number(initialLimit||0))); await Promise.all(keys.map(async key=>{latexMap[key]=await convertOneOleToLatexCached(zipMap, found[key].oleTarget);})); return {outXml:docXml, latexMap, found};}
 
 async function tokenizeImagesAfterFast(docXml, rels, zipMap) {
