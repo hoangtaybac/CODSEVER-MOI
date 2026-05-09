@@ -1154,7 +1154,7 @@ function wordXmlToTextKeepTokens(docXml) {
 function extractSectionTitles(rawText) {
   const text = String(rawText || "").replace(/\r/g, "");
 
-  const qRe = /(^|\n)\s*Câu\s+(\d+)\./gi;
+  const qRe = /(^|\n)\s*Câu\s+(\d+)\:/gi;
   const qAnchors = [];
   let qm;
   while ((qm = qRe.exec(text)) !== null) {
